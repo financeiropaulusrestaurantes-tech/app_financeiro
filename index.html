@@ -2107,9 +2107,64 @@ function renderFatLancamentosView(container, tipo){
 }
 function renderFatContas(container){
   const hoje = todayISO();
+  const filters = { busca:"", de:"", ate:"", unidade:"", categoria:"", status:"previsto" };
+
   function build(){
-    const pagar = STATE.faturamentoLancamentos.filter(l=>l.tipo==="saida" && l.status==="previsto").sort((a,b)=>a.data_prevista.localeCompare(b.data_prevista));
-    const receber = STATE.faturamentoLancamentos.filter(l=>l.tipo==="entrada" && l.status==="previsto").sort((a,b)=>a.data_prevista.localeCompare(b.data_prevista));
+    const todas = STATE.faturamentoLancamentos;
+    const unidades = Array.from(new Set(todas.map(l=>l.unidade))).sort();
+    const categorias = Array.from(new Set(todas.map(l=>l.categoria))).sort();
+
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+        <div>
+          <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Faturamentos — Contas a Pagar e a Receber</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;" id="contas-summary"></p>
+        </div>
+      </div>
+      <div class="filter-bar">
+        <div><span class="field-label">Buscar</span>
+          <div style="position:relative;">
+            <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:#a8a29e;">${icon("search",14)}</span>
+            <input class="input" style="padding-left:30px;" id="ctf-busca" placeholder="Contraparte ou categoria" />
+          </div>
+        </div>
+        <div><span class="field-label">Vencimento de</span><input class="input" type="date" id="ctf-de" /></div>
+        <div><span class="field-label">Vencimento até</span><input class="input" type="date" id="ctf-ate" /></div>
+        <div><span class="field-label">Unidade</span>
+          <select class="input" id="ctf-unidade"><option value="">Todas</option>${unidades.map(u=>`<option value="${esc(u)}">${esc(u)}</option>`).join("")}</select></div>
+        <div><span class="field-label">Categoria</span>
+          <select class="input" id="ctf-categoria"><option value="">Todas</option>${categorias.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select></div>
+        <div><span class="field-label">Status</span>
+          <select class="input" id="ctf-status"><option value="previsto">Em aberto</option><option value="realizado">Já quitado</option><option value="">Todos</option></select></div>
+      </div>
+      <div id="contas-results"></div>
+      <style>@media(min-width:900px){.contas-flex{flex-direction:row !important;}}</style>`;
+
+    ["busca","de","ate","unidade","categoria","status"].forEach(k=>{
+      const el = container.querySelector(`#ctf-${k}`);
+      el.value = filters[k];
+      el.addEventListener(k==="busca"?"input":"change", ()=>{ filters[k]=el.value; refresh(); });
+    });
+
+    refresh();
+  }
+
+  function passaFiltros(l){
+    if(filters.busca){ const alvo = `${l.contraparte} ${l.categoria}`.toLowerCase(); if(!alvo.includes(filters.busca.toLowerCase())) return false; }
+    if(filters.de && l.data_prevista < filters.de) return false;
+    if(filters.ate && l.data_prevista > filters.ate) return false;
+    if(filters.unidade && l.unidade!==filters.unidade) return false;
+    if(filters.categoria && l.categoria!==filters.categoria) return false;
+    if(filters.status && l.status!==filters.status) return false;
+    return true;
+  }
+
+  function refresh(){
+    const pagar = STATE.faturamentoLancamentos.filter(l=>l.tipo==="saida").filter(passaFiltros).sort((a,b)=>a.data_prevista.localeCompare(b.data_prevista));
+    const receber = STATE.faturamentoLancamentos.filter(l=>l.tipo==="entrada").filter(passaFiltros).sort((a,b)=>a.data_prevista.localeCompare(b.data_prevista));
+
+    document.getElementById("contas-summary").innerHTML = `${pagar.length+receber.length} lançamento(s) encontrado(s) · A pagar: <b style="color:${DANGER};">${currency(pagar.reduce((s,i)=>s+i.valor,0))}</b> · A receber: <b style="color:${BRAND[600]};">${currency(receber.reduce((s,i)=>s+i.valor,0))}</b>`;
+
     const lista = (titulo, itens, cor, acaoLabel) => `
       <div class="card" style="flex:1;overflow:hidden;">
         <div style="padding:14px 16px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center;">
@@ -2118,33 +2173,34 @@ function renderFatContas(container){
         </div>
         <div style="max-height:540px;overflow-y:auto;">
           ${itens.map(l=>{
-            const atrasado = l.data_prevista < hoje;
+            const atrasado = l.status==="previsto" && l.data_prevista < hoje;
             return `<div class="list-row">
               <div style="min-width:0;">
                 <p style="margin:0;font-size:14px;font-weight:500;color:#44403c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(l.contraparte)}</p>
                 <p style="margin:2px 0 0;font-size:12px;color:#a8a29e;">${esc(l.categoria)} · ${esc(l.unidade)}</p>
-                <p style="margin:2px 0 0;font-size:12px;${atrasado?`color:${DANGER};font-weight:600;`:"color:#a8a29e;"}">${atrasado?"Vencido em ":"Previsto para "}${fmtDate(l.data_prevista)}</p>
+                <p style="margin:2px 0 0;font-size:12px;${atrasado?`color:${DANGER};font-weight:600;`:"color:#a8a29e;"}">${l.status==="realizado"?"Quitado em ":atrasado?"Vencido em ":"Previsto para "}${fmtDate(l.status==="realizado"&&l.data_realizada?l.data_realizada:l.data_prevista)}</p>
               </div>
               <div style="text-align:right;flex-shrink:0;">
                 <p style="margin:0;font-size:14px;font-weight:600;color:${cor};">${currency(l.valor)}</p>
-                <button class="quitar-fat-btn" data-id="${l.id}" style="border:none;background:none;font-size:11px;margin-top:2px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;">${acaoLabel}</button>
+                ${l.status==="previsto" ? `<button class="quitar-fat-btn" data-id="${l.id}" style="border:none;background:none;font-size:11px;margin-top:2px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;">${acaoLabel}</button>` : ""}
               </div>
             </div>`;
-          }).join("") || `<p class="empty">Nada por aqui. Tudo em dia!</p>`}
+          }).join("") || `<p class="empty">Nada por aqui para os filtros aplicados.</p>`}
         </div>
       </div>`;
-    container.innerHTML = `
-      <h2 class="serif" style="margin:0 0 4px;font-size:24px;color:${BRAND[800]};">Faturamentos — Contas a Pagar e a Receber</h2>
-      <p class="muted" style="margin:0 0 18px;font-size:13px;">Lançamentos previstos que ainda não foram confirmados.</p>
+
+    const rows = document.getElementById("contas-results");
+    rows.innerHTML = `
       <div style="display:flex;flex-direction:column;gap:14px;" class="contas-flex">
         ${lista("Contas a Pagar", pagar, DANGER, "Marcar como pago")}
         ${lista("Contas a Receber", receber, BRAND[600], "Marcar como recebido")}
-      </div>
-      <style>@media(min-width:900px){.contas-flex{flex-direction:row !important;}}</style>`;
-    container.querySelectorAll(".quitar-fat-btn").forEach(b=> b.addEventListener("click", async ()=>{
-      try{ await quitarFatConta(b.dataset.id); build(); }catch(err){ toast(err.message, true); }
+      </div>`;
+
+    rows.querySelectorAll(".quitar-fat-btn").forEach(b=> b.addEventListener("click", async ()=>{
+      try{ await quitarFatConta(b.dataset.id); refresh(); }catch(err){ toast(err.message, true); }
     }));
   }
+
   build();
 }
 function renderFatDuplicatas(container){
