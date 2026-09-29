@@ -54,6 +54,7 @@
 
   table{width:100%; border-collapse:collapse; font-size:14px;}
   thead th{text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:#a8a29e; padding:11px 14px; border-bottom:1px solid var(--border);}
+  thead th.th-sort:hover{color:var(--b700);}
   tbody td{padding:11px 14px; border-bottom:1px solid #faf9f6;}
   tbody tr:hover{background:#fafaf8;}
 
@@ -138,6 +139,37 @@ const monthKey = (d) => d ? d.slice(0,7) : "";
 const monthLabel = (ym) => { const [y,m]=ym.split("-"); const n=["Jan","Fev","Mar","Abr","Mai","Jun","Jul","Ago","Set","Out","Nov","Dez"]; return `${n[parseInt(m,10)-1]}/${y.slice(2)}`; };
 const lastNMonthKeys = (n) => { const arr=[]; const now=new Date(); for(let i=n-1;i>=0;i--){ const d=new Date(now.getFullYear(),now.getMonth()-i,1); arr.push(`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}`);} return arr; };
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+/* ---- Ordenação de colunas (clique no cabeçalho da tabela) ---- */
+function thSort(label, key, state, style=""){
+  const ativo = state.key===key;
+  const seta = ativo ? (state.dir==="asc" ? "↑" : "↓") : "";
+  return `<th class="th-sort" data-sort-key="${key}" style="cursor:pointer;user-select:none;white-space:nowrap;${style}">${esc(label)}${ativo?` <span style="color:${BRAND[600]};">${seta}</span>`:""}</th>`;
+}
+function wireSort(container, state, onChange){
+  container.querySelectorAll(".th-sort").forEach(th=>{
+    th.addEventListener("click", ()=>{
+      const key = th.dataset.sortKey;
+      if(state.key===key) state.dir = state.dir==="asc" ? "desc" : "asc";
+      else { state.key = key; state.dir = "asc"; }
+      onChange();
+    });
+  });
+}
+function ordenarPor(lista, state, extractors){
+  const ext = extractors[state.key];
+  if(!ext) return lista;
+  const copia = [...lista].sort((a,b)=>{
+    const va = ext(a), vb = ext(b);
+    if(va==null && vb==null) return 0;
+    if(va==null) return 1;
+    if(vb==null) return -1;
+    if(typeof va==="number" && typeof vb==="number") return va-vb;
+    return String(va).localeCompare(String(vb), "pt-BR", {sensitivity:"base", numeric:true});
+  });
+  if(state.dir==="desc") copia.reverse();
+  return copia;
+}
 
 function icon(name, size=16, color="currentColor", sw=2){
   const P = {
@@ -277,7 +309,7 @@ async function sbFetch(path, {method="GET", body, retry=true}={}){
 }
 
 /* ============================== Estado global ============================== */
-const STATE = { loading:true, session:null, currentUser:null, users:[], lancamentos:[], cartaoLancamentos:[], valeLancamentos:[], faturamentoLancamentos:[], categorias:[], view:"dashboard", navOpen:{} };
+const STATE = { loading:true, session:null, currentUser:null, users:[], lancamentos:[], cartaoLancamentos:[], valeLancamentos:[], faturamentoLancamentos:[], categorias:[], cartoes:[], fornecedores:[], view:"dashboard", navOpen:{} };
 const CHARTS = {};
 
 async function bootstrap(){
@@ -302,7 +334,7 @@ async function loadProfileAndData(){
   const profile = profiles && profiles[0];
   if(!profile) throw new Error("Perfil não encontrado.");
   STATE.currentUser = { id: STATE.session.user.id, email: STATE.session.user.email, nome: profile.nome, cargo: profile.cargo, permissoes: profile.permissoes || [] };
-  await Promise.all([reloadLancamentos(), reloadCartaoLancamentos(), reloadValeLancamentos(), reloadFaturamentoLancamentos(), reloadCategorias(), isAdminLevel(STATE.currentUser) ? reloadUsers() : Promise.resolve()]);
+  await Promise.all([reloadLancamentos(), reloadCartaoLancamentos(), reloadValeLancamentos(), reloadFaturamentoLancamentos(), reloadCategorias(), reloadCartoes(), reloadFornecedores(), isAdminLevel(STATE.currentUser) ? reloadUsers() : Promise.resolve()]);
   ajustarViewInicial();
 }
 function ajustarViewInicial(){
@@ -319,6 +351,8 @@ async function reloadCartaoLancamentos(){ STATE.cartaoLancamentos = await sbFetc
 async function reloadValeLancamentos(){ STATE.valeLancamentos = await sbFetch(`/rest/v1/vale_lancamentos?select=*&order=data.desc`); }
 async function reloadFaturamentoLancamentos(){ STATE.faturamentoLancamentos = await sbFetch(`/rest/v1/faturamento_lancamentos?select=*&order=criado_em.desc`); }
 async function reloadCategorias(){ STATE.categorias = await sbFetch(`/rest/v1/categorias?select=*&order=nome.asc`); }
+async function reloadCartoes(){ STATE.cartoes = await sbFetch(`/rest/v1/cartoes?select=*&order=nome.asc`); }
+async function reloadFornecedores(){ STATE.fornecedores = await sbFetch(`/rest/v1/fornecedores?select=*&order=nome.asc`); }
 async function reloadUsers(){ STATE.users = await sbFetch(`/rest/v1/profiles?select=*&order=nome.asc`); }
 
 async function addCategoria(tipo, nome){
@@ -332,6 +366,38 @@ async function editCategoria(id, nome){
 async function deleteCategoria(id){
   await sbFetch(`/rest/v1/categorias?id=eq.${id}`, { method:"DELETE" });
   STATE.categorias = STATE.categorias.filter(c=>c.id!==id);
+}
+
+/* ---- Cadastro de cartões (só apelido + últimos 4 dígitos, nunca o número completo) ---- */
+async function addCartao(nome, ultimosDigitos){
+  const [novo] = await sbFetch(`/rest/v1/cartoes`, { method:"POST", body:{ nome, ultimos_digitos: ultimosDigitos } });
+  STATE.cartoes = [...STATE.cartoes, novo].sort((a,b)=>a.nome.localeCompare(b.nome));
+  return novo;
+}
+async function editCartao(id, nome, ultimosDigitos){
+  const [atualizado] = await sbFetch(`/rest/v1/cartoes?id=eq.${id}`, { method:"PATCH", body:{ nome, ultimos_digitos: ultimosDigitos } });
+  STATE.cartoes = STATE.cartoes.map(c=> c.id===id ? atualizado : c).sort((a,b)=>a.nome.localeCompare(b.nome));
+  return atualizado;
+}
+async function deleteCartao(id){
+  await sbFetch(`/rest/v1/cartoes?id=eq.${id}`, { method:"DELETE" });
+  STATE.cartoes = STATE.cartoes.filter(c=>c.id!==id);
+}
+
+/* ---- Cadastro de fornecedores ---- */
+async function addFornecedor(data){
+  const [novo] = await sbFetch(`/rest/v1/fornecedores`, { method:"POST", body:data });
+  STATE.fornecedores = [...STATE.fornecedores, novo].sort((a,b)=>a.nome.localeCompare(b.nome));
+  return novo;
+}
+async function editFornecedor(id, data){
+  const [atualizado] = await sbFetch(`/rest/v1/fornecedores?id=eq.${id}`, { method:"PATCH", body:data });
+  STATE.fornecedores = STATE.fornecedores.map(f=> f.id===id ? atualizado : f).sort((a,b)=>a.nome.localeCompare(b.nome));
+  return atualizado;
+}
+async function deleteFornecedor(id){
+  await sbFetch(`/rest/v1/fornecedores?id=eq.${id}`, { method:"DELETE" });
+  STATE.fornecedores = STATE.fornecedores.filter(f=>f.id!==id);
 }
 
 async function addLancamento(data){
@@ -705,6 +771,10 @@ const NAV_GROUPS = [
     {id:"fat-duplicatas", label:"Duplicatas a Pagar", ic:"card"},
     {id:"fat-personalizado", label:"Análise Personalizada", ic:"sparkles"},
   ]},
+  { id:"cadastros", label:"Cadastros", ic:"folder", items:[
+    {id:"cad-cartoes", label:"Cartões", ic:"card"},
+    {id:"cad-fornecedores", label:"Fornecedores", ic:"users"},
+  ]},
   { id:"config", label:"Configurações", ic:"settings", items:[
     {id:"seguranca", label:"Segurança", ic:"lock"},
     {id:"usuarios", label:"Usuários", ic:"users"},
@@ -804,7 +874,7 @@ function renderSidebar(){
     btn.addEventListener("click", ()=>{ STATE.view = btn.dataset.view; renderSidebar(); renderView(); });
   });
   document.getElementById("btn-logout").addEventListener("click", async ()=>{
-    STATE.session = null; STATE.currentUser = null; STATE.users=[]; STATE.lancamentos=[]; STATE.cartaoLancamentos=[]; STATE.valeLancamentos=[]; STATE.faturamentoLancamentos=[];
+    STATE.session = null; STATE.currentUser = null; STATE.users=[]; STATE.lancamentos=[]; STATE.cartaoLancamentos=[]; STATE.valeLancamentos=[]; STATE.faturamentoLancamentos=[]; STATE.cartoes=[]; STATE.fornecedores=[];
     await saveRefreshToken(null);
     renderRoot();
   });
@@ -838,6 +908,8 @@ function renderView(){
   else if(STATE.view==="fat-contas") renderFatContas(c);
   else if(STATE.view==="fat-duplicatas") renderFatDuplicatas(c);
   else if(STATE.view==="fat-personalizado") renderFatPersonalizado(c);
+  else if(STATE.view==="cad-cartoes") renderCadCartoes(c);
+  else if(STATE.view==="cad-fornecedores") renderCadFornecedores(c);
   else if(STATE.view==="seguranca") renderSeguranca(c);
   else if(STATE.view==="usuarios") renderUsuarios(c);
   else renderSemAcesso(c);
@@ -989,6 +1061,16 @@ function renderLancamentosView(container, tipo){
   const unidades = Array.from(new Set(STATE.lancamentos.map(l=>l.unidade))).sort();
 
   const filters = { busca:"", de:"", ate:"", unidade:"", categoria:"", status:"" };
+  const sortState = { key:"data", dir:"desc" };
+  const sortExtractors = {
+    data: l => l.data_realizada || l.data_prevista,
+    status: l => l.status,
+    categoria: l => l.categoria,
+    contraparte: l => l.contraparte,
+    unidade: l => l.unidade,
+    valor: l => l.valor,
+    usuario: l => l.usuario_nome,
+  };
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -1026,7 +1108,8 @@ function renderLancamentosView(container, tipo){
       if(filters.categoria && l.categoria!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
-    }).sort((a,b)=> (b.data_realizada||b.data_prevista).localeCompare(a.data_realizada||a.data_prevista));
+    });
+    const dadosOrdenados = ordenarPor(dados, sortState, sortExtractors);
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
     document.getElementById("lanc-summary").innerHTML = `${dados.length} lançamento(s) · Total realizado: <b style="color:${isEntrada?BRAND[600]:DANGER};">${currency(total)}</b>`;
@@ -1036,11 +1119,11 @@ function renderLancamentosView(container, tipo){
       <div class="card" style="overflow:hidden;">
         <table>
           <thead><tr>
-            <th>Data</th><th>Status</th><th>Categoria</th><th>${contraLabel}</th><th>Unidade</th>
-            <th style="text-align:right;">Valor</th><th>Lançado por</th><th style="text-align:right;">Ações</th>
+            ${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
+            ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Lançado por","usuario",sortState)}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
-            ${dados.map(l=>`
+            ${dadosOrdenados.map(l=>`
               <tr>
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
@@ -1060,6 +1143,7 @@ function renderLancamentosView(container, tipo){
         </table>
       </div>`;
 
+    wireSort(rows, sortState, refresh);
     rows.querySelectorAll(".edit-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.lancamentos.find(l=>l.id===b.dataset.id);
       openLancamentoModal(tipo, item, refresh);
@@ -1297,7 +1381,6 @@ function cartaoBadge(status){
 function parcelaLabel(l){ return l.parcelas_total>1 ? `${l.parcela_num}/${l.parcelas_total}` : "Único"; }
 
 function cartaoCompraFormHTML(){
-  const cartoes = Array.from(new Set(STATE.cartaoLancamentos.map(l=>l.cartao))).sort();
   const portadores = Array.from(new Set(STATE.cartaoLancamentos.map(l=>l.portador))).sort();
   return `
     <form id="cartao-form">
@@ -1313,9 +1396,11 @@ function cartaoCompraFormHTML(){
           <input class="input" type="number" min="0" step="0.01" id="cf-valor" placeholder="0,00" required /></label>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        <label class="field"><span class="field-label">Cartão</span>
-          <input class="input" id="cf-cartao" list="cartoes-list" placeholder="ex: Nubank Empresarial" required />
-          <datalist id="cartoes-list">${cartoes.map(c=>`<option value="${esc(c)}">`).join("")}</datalist></label>
+        <label class="field">
+          <span class="field-label">Cartão</span>
+          <select class="input" id="cf-cartao" required>${cartaoSelectOptionsHTML("")}</select>
+          ${manageCartoesBtn()}
+        </label>
         <label class="field"><span class="field-label">Portador / Responsável</span>
           <input class="input" id="cf-portador" list="portadores-list" placeholder="Quem usou o cartão" required />
           <datalist id="portadores-list">${portadores.map(p=>`<option value="${esc(p)}">`).join("")}</datalist></label>
@@ -1362,6 +1447,14 @@ function openCartaoCompraModal(onSaved){
           sel.innerHTML = catsFor("cartao").map(c=>`<option value="${esc(c)}" ${c===atual?"selected":""}>${esc(c)}</option>`).join("");
         });
       });
+      const cadastrarCartaoBtnCf = body.querySelector("#btn-cadastrar-cartao-inline");
+      if(cadastrarCartaoBtnCf) cadastrarCartaoBtnCf.addEventListener("click", (e)=>{
+        e.preventDefault();
+        openCartaoCadastroModal(null, (salvo)=>{
+          const sel = body.querySelector("#cf-cartao");
+          sel.innerHTML = cartaoSelectOptionsHTML(salvo.nome);
+        }, {nested:true});
+      });
       body.querySelector("#cartao-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const valorTotal = parseFloat(body.querySelector("#cf-valor").value);
@@ -1399,7 +1492,11 @@ function cartaoEditFormHTML(item){
           <input class="input" type="number" min="0" step="0.01" id="ce-valor" value="${item.valor}" required /></label>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        <label class="field"><span class="field-label">Cartão</span><input class="input" id="ce-cartao" value="${esc(item.cartao)}" required /></label>
+        <label class="field">
+          <span class="field-label">Cartão</span>
+          <select class="input" id="ce-cartao" required>${cartaoSelectOptionsHTML(item.cartao)}</select>
+          ${manageCartoesBtn()}
+        </label>
         <label class="field"><span class="field-label">Portador</span><input class="input" id="ce-portador" value="${esc(item.portador)}" required /></label>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
@@ -1432,6 +1529,14 @@ function openCartaoEditModal(item, onSaved){
           sel.innerHTML = catsFor("cartao").map(c=>`<option value="${esc(c)}" ${c===atual?"selected":""}>${esc(c)}</option>`).join("");
         });
       });
+      const cadastrarCartaoBtnCe = body.querySelector("#btn-cadastrar-cartao-inline");
+      if(cadastrarCartaoBtnCe) cadastrarCartaoBtnCe.addEventListener("click", (e)=>{
+        e.preventDefault();
+        openCartaoCadastroModal(null, (salvo)=>{
+          const sel = body.querySelector("#ce-cartao");
+          sel.innerHTML = cartaoSelectOptionsHTML(salvo.nome);
+        }, {nested:true});
+      });
       body.querySelector("#cartao-edit-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const valor = parseFloat(body.querySelector("#ce-valor").value);
@@ -1459,6 +1564,16 @@ function openCartaoEditModal(item, onSaved){
 function renderCartoesLancamentos(container){
   const cartoes = Array.from(new Set(STATE.cartaoLancamentos.map(l=>l.cartao))).sort();
   const filters = { busca:"", de:"", ate:"", cartao:"", categoria:"", status:"" };
+  const sortState = { key:"data", dir:"desc" };
+  const sortExtractors = {
+    data: l => l.data,
+    status: l => l.status,
+    categoria: l => l.categoria,
+    descricao: l => l.descricao,
+    cartao: l => l.cartao,
+    portador: l => l.portador,
+    valor: l => l.valor,
+  };
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -1495,7 +1610,8 @@ function renderCartoesLancamentos(container){
       if(filters.categoria && l.categoria!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
-    }).sort((a,b)=> b.data.localeCompare(a.data));
+    });
+    const dadosOrdenados = ordenarPor(dados, sortState, sortExtractors);
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
     document.getElementById("cartao-summary").innerHTML = `${dados.length} lançamento(s) · Total pago: <b style="color:${DANGER};">${currency(total)}</b>`;
@@ -1505,11 +1621,11 @@ function renderCartoesLancamentos(container){
       <div class="card" style="overflow:hidden;">
         <table>
           <thead><tr>
-            <th>Data</th><th>Status</th><th>Categoria</th><th>Descrição</th><th>Cartão</th><th>Portador</th><th>Parcela</th>
-            <th style="text-align:right;">Valor</th><th style="text-align:right;">Ações</th>
+            ${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Cartão","cartao",sortState)}${thSort("Portador","portador",sortState)}<th>Parcela</th>
+            ${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
-            ${dados.map(l=>`
+            ${dadosOrdenados.map(l=>`
               <tr>
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${cartaoBadge(l.status)}</td>
@@ -1530,6 +1646,7 @@ function renderCartoesLancamentos(container){
         </table>
       </div>`;
 
+    wireSort(rows, sortState, refresh);
     rows.querySelectorAll(".edit-cartao-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.cartaoLancamentos.find(l=>l.id===b.dataset.id);
       openCartaoEditModal(item, refresh);
@@ -1720,6 +1837,16 @@ function renderValesLancamentos(container){
   const origens = Array.from(new Set(STATE.valeLancamentos.map(l=>l.origem))).sort();
   const unidades = Array.from(new Set(STATE.valeLancamentos.map(l=>l.unidade))).sort();
   const filters = { busca:"", de:"", ate:"", unidade:"", categoria:"", status:"" };
+  const sortState = { key:"data", dir:"desc" };
+  const sortExtractors = {
+    data: l => l.data,
+    status: l => l.status,
+    categoria: l => l.categoria,
+    descricao: l => l.descricao,
+    origem: l => l.origem,
+    unidade: l => l.unidade,
+    valor: l => l.valor,
+  };
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -1756,7 +1883,8 @@ function renderValesLancamentos(container){
       if(filters.categoria && l.categoria!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
-    }).sort((a,b)=> b.data.localeCompare(a.data));
+    });
+    const dadosOrdenados = ordenarPor(dados, sortState, sortExtractors);
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
     document.getElementById("vale-summary").innerHTML = `${dados.length} vale(s) · Total recebido: <b style="color:${BRAND[600]};">${currency(total)}</b>`;
@@ -1766,11 +1894,11 @@ function renderValesLancamentos(container){
       <div class="card" style="overflow:hidden;">
         <table>
           <thead><tr>
-            <th>Data</th><th>Status</th><th>Categoria</th><th>Descrição</th><th>Origem</th><th>Unidade</th>
-            <th style="text-align:right;">Valor</th><th style="text-align:right;">Ações</th>
+            ${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Origem","origem",sortState)}${thSort("Unidade","unidade",sortState)}
+            ${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
-            ${dados.map(l=>`
+            ${dadosOrdenados.map(l=>`
               <tr>
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${valeBadge(l.status)}</td>
@@ -1790,6 +1918,7 @@ function renderValesLancamentos(container){
         </table>
       </div>`;
 
+    wireSort(rows, sortState, refresh);
     rows.querySelectorAll(".edit-vale-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.valeLancamentos.find(l=>l.id===b.dataset.id);
       openValeModal(item, refresh);
@@ -2008,6 +2137,18 @@ function renderFatLancamentosView(container, tipo){
   const unidades = Array.from(new Set(STATE.faturamentoLancamentos.map(l=>l.unidade))).sort();
 
   const filters = { busca:"", de:"", ate:"", unidade:"", categoria:"", status:"" };
+  const sortState = { key:"data", dir:"desc" };
+  const sortExtractors = {
+    data: l => l.data_realizada || l.data_prevista,
+    status: l => l.status,
+    categoria: l => l.categoria,
+    contraparte: l => l.contraparte,
+    unidade: l => l.unidade,
+    vencimento: l => l.data_vencimento,
+    duplicata: l => l.duplicata ? (l.numero_duplicata||"Sim") : "",
+    valor: l => l.valor,
+    usuario: l => l.usuario_nome,
+  };
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -2045,7 +2186,8 @@ function renderFatLancamentosView(container, tipo){
       if(filters.categoria && l.categoria!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
-    }).sort((a,b)=> (b.data_realizada||b.data_prevista).localeCompare(a.data_realizada||a.data_prevista));
+    });
+    const dadosOrdenados = ordenarPor(dados, sortState, sortExtractors);
 
     const totalFiltrado = dados.reduce((s,l)=> s + l.valor, 0);
     const totalRealizado = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
@@ -2058,13 +2200,13 @@ function renderFatLancamentosView(container, tipo){
       <div class="card" style="overflow:hidden;">
         <table>
           <thead><tr>
-            <th>Data</th><th>Status</th><th>Categoria</th><th>${contraLabel}</th><th>Unidade</th>
-            ${isEntrada ? `<th>Vencimento</th><th>Prazo</th>` : ""}
-            ${!isEntrada ? `<th>Duplicata</th>` : ""}
-            <th style="text-align:right;">Valor</th><th>Lançado por</th><th style="text-align:right;">Ações</th>
+            ${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
+            ${isEntrada ? `${thSort("Vencimento","vencimento",sortState)}<th>Prazo</th>` : ""}
+            ${!isEntrada ? `${thSort("Duplicata","duplicata",sortState)}` : ""}
+            ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Lançado por","usuario",sortState)}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
-            ${dados.map(l=>`
+            ${dadosOrdenados.map(l=>`
               <tr>
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
@@ -2086,6 +2228,7 @@ function renderFatLancamentosView(container, tipo){
         </table>
       </div>`;
 
+    wireSort(rows, sortState, refresh);
     rows.querySelectorAll(".edit-fat-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.faturamentoLancamentos.find(l=>l.id===b.dataset.id);
       openFatLancamentoModal(tipo, item, refresh);
@@ -2206,6 +2349,16 @@ function renderFatContas(container){
 function renderFatDuplicatas(container){
   const hoje = todayISO();
   const filters = { busca:"", de:"", ate:"", unidade:"", categoria:"", status:"" };
+  const sortState = { key:"vencimento", dir:"asc" };
+  const sortExtractors = {
+    vencimento: l => l.data_prevista,
+    status: l => l.status,
+    numero: l => l.numero_duplicata,
+    contraparte: l => l.contraparte,
+    categoria: l => l.categoria,
+    unidade: l => l.unidade,
+    valor: l => l.valor,
+  };
 
   function build(){
     const todas = STATE.faturamentoLancamentos.filter(l=>l.tipo==="saida" && l.duplicata);
@@ -2256,7 +2409,8 @@ function renderFatDuplicatas(container){
       if(filters.categoria && l.categoria!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
-    }).sort((a,b)=>a.data_prevista.localeCompare(b.data_prevista));
+    });
+    const duplicatasOrdenadas = ordenarPor(duplicatas, sortState, sortExtractors);
 
     const totalAberto = duplicatas.filter(l=>l.status==="previsto").reduce((s,l)=>s+l.valor,0);
     document.getElementById("dup-summary").innerHTML = `${duplicatas.length} duplicata(s) encontrada(s) · Em aberto: <b style="color:${DANGER};">${currency(totalAberto)}</b>`;
@@ -2265,9 +2419,9 @@ function renderFatDuplicatas(container){
     rows.innerHTML = `
       <div class="card" style="overflow:hidden;">
         <table>
-          <thead><tr><th>Vencimento</th><th>Status</th><th>Nº Duplicata</th><th>Fornecedor</th><th>Categoria</th><th>Unidade</th><th style="text-align:right;">Valor</th><th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Vencimento","vencimento",sortState)}${thSort("Status","status",sortState)}${thSort("Nº Duplicata","numero",sortState)}${thSort("Fornecedor","contraparte",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
-            ${duplicatas.map(l=>{
+            ${duplicatasOrdenadas.map(l=>{
               const atrasado = l.status==="previsto" && l.data_prevista < hoje;
               return `<tr>
                 <td style="white-space:nowrap;${atrasado?`color:${DANGER};font-weight:600;`:""}">${fmtDate(l.data_prevista)}</td>
@@ -2284,6 +2438,7 @@ function renderFatDuplicatas(container){
         </table>
       </div>`;
 
+    wireSort(rows, sortState, refresh);
     rows.querySelectorAll(".quitar-dup-btn").forEach(b=> b.addEventListener("click", async ()=>{
       try{ await quitarFatConta(b.dataset.id); refresh(); }catch(err){ toast(err.message, true); }
     }));
@@ -2470,6 +2625,224 @@ function segurancaEnrollHTML(enroll){
       </form>
     </div>`;
 }
+/* ============================== Cadastros — Cartões ============================== */
+function cartaoUltimos4Digits(v){ return String(v||"").replace(/\D/g,"").slice(-4); }
+function cartaoCadastroFormHTML(item){
+  return `
+    <form id="cartao-cad-form">
+      <label class="field"><span class="field-label">Nome do cartão</span>
+        <input class="input" id="cc-nome" placeholder="ex: Nubank Empresarial" value="${esc(item?item.nome:"")}" required /></label>
+      <label class="field"><span class="field-label">Últimos 4 dígitos</span>
+        <input class="input" id="cc-digitos" inputmode="numeric" pattern="[0-9]{4}" maxlength="4" placeholder="0000" style="letter-spacing:3px;" value="${esc(item?item.ultimos_digitos:"")}" required /></label>
+      <p class="field-hint">Por segurança, o sistema guarda só os 4 últimos dígitos — nunca cadastre o número completo do cartão.</p>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="cc-cancel">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="cc-submit">${icon("check",15)} Salvar cartão</button>
+      </div>
+    </form>`;
+}
+function manageCartoesBtn(){
+  return `<button type="button" id="btn-cadastrar-cartao-inline" style="border:none;background:none;font-size:11px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;padding:0;margin-top:5px;display:inline-flex;align-items:center;gap:3px;">${icon("plus",11)} Cadastrar novo cartão</button>`;
+}
+function cartaoSelectOptionsHTML(selecionado){
+  const nomes = STATE.cartoes.map(c=>c.nome);
+  const extra = (selecionado && !nomes.includes(selecionado)) ? `<option value="${esc(selecionado)}" selected>${esc(selecionado)} (não cadastrado)</option>` : "";
+  return `<option value="">Selecione um cartão...</option>${extra}${STATE.cartoes.map(c=>`<option value="${esc(c.nome)}" ${c.nome===selecionado?"selected":""}>${esc(c.nome)} — •••• ${esc(c.ultimos_digitos)}</option>`).join("")}`;
+}
+function openCartaoCadastroModal(item, onSaved, {nested=false}={}){
+  const open = nested ? openNestedModal : openModal;
+  const close = nested ? closeNestedModal : closeModal;
+  open({
+    title: item ? "Editar cartão" : "Novo cartão",
+    bodyHTML: cartaoCadastroFormHTML(item),
+    mount:(body)=>{
+      const digitosInput = body.querySelector("#cc-digitos");
+      digitosInput.addEventListener("input", ()=>{ digitosInput.value = cartaoUltimos4Digits(digitosInput.value); });
+      body.querySelector("#cc-cancel").addEventListener("click", close);
+      body.querySelector("#cartao-cad-form").addEventListener("submit", async (e)=>{
+        e.preventDefault();
+        const nome = body.querySelector("#cc-nome").value.trim();
+        const digitos = cartaoUltimos4Digits(digitosInput.value);
+        if(!nome || digitos.length!==4) return;
+        const btn = body.querySelector("#cc-submit");
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+        try{
+          let salvo;
+          if(item) salvo = await editCartao(item.id, nome, digitos);
+          else salvo = await addCartao(nome, digitos);
+          close(); onSaved && onSaved(salvo);
+        }catch(err){
+          toast(/duplicate|unique/i.test(err.message) ? "Já existe um cartão com esse nome." : err.message, true);
+          btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar cartão`;
+        }
+      });
+    }
+  });
+}
+function renderCadCartoes(container){
+  const sortState = { key:"nome", dir:"asc" };
+  const sortExtractors = { nome: c=>c.nome, digitos: c=>c.ultimos_digitos, criado: c=>c.criado_em };
+
+  function refresh(){
+    const dados = ordenarPor(STATE.cartoes, sortState, sortExtractors);
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+        <div>
+          <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Cadastro de Cartões</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.cartoes.length} cartão(ões) cadastrado(s) · guardamos só nome e últimos 4 dígitos.</p>
+        </div>
+        <button class="btn btn-primary" id="btn-novo-cartao-cad">${icon("plus",16)} Novo cartão</button>
+      </div>
+      <div class="card" style="overflow:hidden;">
+        <table>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Últimos 4 dígitos","digitos",sortState)}${thSort("Cadastrado em","criado",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <tbody>
+            ${dados.map(c=>`
+              <tr>
+                <td style="font-weight:500;color:#44403c;">${esc(c.nome)}</td>
+                <td style="color:#78716c;letter-spacing:1px;">•••• ${esc(c.ultimos_digitos)}</td>
+                <td style="color:#a8a29e;white-space:nowrap;">${fmtDate((c.criado_em||"").slice(0,10))}</td>
+                <td>
+                  <div style="display:flex;justify-content:flex-end;gap:2px;">
+                    <button class="icon-btn edit-cartaocad-btn" data-id="${c.id}">${icon("edit",15,"#78716c")}</button>
+                    <button class="icon-btn danger del-cartaocad-btn" data-id="${c.id}">${icon("trash",15,DANGER)}</button>
+                  </div>
+                </td>
+              </tr>`).join("") || `<tr><td colspan="4" class="empty">Nenhum cartão cadastrado ainda.</td></tr>`}
+          </tbody>
+        </table>
+      </div>`;
+
+    wireSort(container, sortState, refresh);
+    container.querySelector("#btn-novo-cartao-cad").addEventListener("click", ()=> openCartaoCadastroModal(null, refresh));
+    container.querySelectorAll(".edit-cartaocad-btn").forEach(b=> b.addEventListener("click", ()=>{
+      const item = STATE.cartoes.find(c=>c.id===b.dataset.id);
+      openCartaoCadastroModal(item, refresh);
+    }));
+    container.querySelectorAll(".del-cartaocad-btn").forEach(b=> b.addEventListener("click", ()=>{
+      const item = STATE.cartoes.find(c=>c.id===b.dataset.id);
+      openConfirm(`Excluir o cartão "${item.nome}" (•••• ${item.ultimos_digitos})? Gastos já lançados com esse cartão não são afetados.`, async ()=>{
+        try{ await deleteCartao(item.id); refresh(); }catch(err){ toast(err.message, true); }
+      });
+    }));
+  }
+  refresh();
+}
+
+/* ============================== Cadastros — Fornecedores ============================== */
+function fornecedorFormHTML(item){
+  return `
+    <form id="fornecedor-form">
+      <label class="field"><span class="field-label">Nome</span>
+        <input class="input" id="ff-nome" placeholder="ex: Distribuidora Almeida" value="${esc(item?item.nome:"")}" required /></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <label class="field"><span class="field-label">Telefone</span>
+          <input class="input" id="ff-telefone" placeholder="(00) 00000-0000" value="${esc(item?item.telefone||"":"")}" /></label>
+        <label class="field"><span class="field-label">E-mail</span>
+          <input class="input" type="email" id="ff-email" placeholder="contato@fornecedor.com" value="${esc(item?item.email||"":"")}" /></label>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <label class="field"><span class="field-label">CNPJ/CPF</span>
+          <input class="input" id="ff-documento" placeholder="00.000.000/0000-00" value="${esc(item?item.documento||"":"")}" /></label>
+        <label class="field"><span class="field-label">Categoria padrão</span>
+          <input class="input" id="ff-categoria" placeholder="ex: Insumos" value="${esc(item?item.categoria_padrao||"":"")}" /></label>
+      </div>
+      <label class="field"><span class="field-label">Unidade padrão</span>
+        <input class="input" id="ff-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
+      <label class="field"><span class="field-label">Observações</span>
+        <textarea class="input" id="ff-obs" rows="3">${esc(item?item.observacoes||"":"")}</textarea></label>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="ff-cancel">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="ff-submit">${icon("check",15)} Salvar fornecedor</button>
+      </div>
+    </form>`;
+}
+function openFornecedorModal(item, onSaved){
+  openModal({
+    title: item ? "Editar fornecedor" : "Novo fornecedor",
+    bodyHTML: fornecedorFormHTML(item),
+    mount:(body)=>{
+      body.querySelector("#ff-cancel").addEventListener("click", closeModal);
+      body.querySelector("#fornecedor-form").addEventListener("submit", async (e)=>{
+        e.preventDefault();
+        const nome = body.querySelector("#ff-nome").value.trim();
+        if(!nome) return;
+        const payload = {
+          nome,
+          telefone: body.querySelector("#ff-telefone").value.trim(),
+          email: body.querySelector("#ff-email").value.trim(),
+          documento: body.querySelector("#ff-documento").value.trim(),
+          categoria_padrao: body.querySelector("#ff-categoria").value.trim(),
+          unidade_padrao: body.querySelector("#ff-unidade").value.trim(),
+          observacoes: body.querySelector("#ff-obs").value.trim(),
+        };
+        const btn = body.querySelector("#ff-submit");
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+        try{
+          if(item) await editFornecedor(item.id, payload);
+          else await addFornecedor(payload);
+          closeModal(); onSaved && onSaved();
+        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar fornecedor`; }
+      });
+    }
+  });
+}
+function renderCadFornecedores(container){
+  const sortState = { key:"nome", dir:"asc" };
+  const sortExtractors = {
+    nome: f=>f.nome, telefone: f=>f.telefone, email: f=>f.email,
+    documento: f=>f.documento, categoria: f=>f.categoria_padrao, unidade: f=>f.unidade_padrao,
+  };
+
+  function refresh(){
+    const dados = ordenarPor(STATE.fornecedores, sortState, sortExtractors);
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+        <div>
+          <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Cadastro de Fornecedores</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.fornecedores.length} fornecedor(es) cadastrado(s).</p>
+        </div>
+        <button class="btn btn-primary" id="btn-novo-fornecedor">${icon("plus",16)} Novo fornecedor</button>
+      </div>
+      <div class="card" style="overflow:hidden;">
+        <table>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("E-mail","email",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <tbody>
+            ${dados.map(f=>`
+              <tr>
+                <td style="font-weight:500;color:#44403c;">${esc(f.nome)}</td>
+                <td style="color:#78716c;">${esc(f.telefone||"—")}</td>
+                <td style="color:#78716c;">${esc(f.email||"—")}</td>
+                <td style="color:#78716c;">${esc(f.documento||"—")}</td>
+                <td style="color:#78716c;">${esc(f.categoria_padrao||"—")}</td>
+                <td style="color:#78716c;">${esc(f.unidade_padrao||"—")}</td>
+                <td>
+                  <div style="display:flex;justify-content:flex-end;gap:2px;">
+                    <button class="icon-btn edit-fornecedor-btn" data-id="${f.id}">${icon("edit",15,"#78716c")}</button>
+                    <button class="icon-btn danger del-fornecedor-btn" data-id="${f.id}">${icon("trash",15,DANGER)}</button>
+                  </div>
+                </td>
+              </tr>`).join("") || `<tr><td colspan="7" class="empty">Nenhum fornecedor cadastrado ainda.</td></tr>`}
+          </tbody>
+        </table>
+      </div>`;
+
+    wireSort(container, sortState, refresh);
+    container.querySelector("#btn-novo-fornecedor").addEventListener("click", ()=> openFornecedorModal(null, refresh));
+    container.querySelectorAll(".edit-fornecedor-btn").forEach(b=> b.addEventListener("click", ()=>{
+      const item = STATE.fornecedores.find(f=>f.id===b.dataset.id);
+      openFornecedorModal(item, refresh);
+    }));
+    container.querySelectorAll(".del-fornecedor-btn").forEach(b=> b.addEventListener("click", ()=>{
+      const item = STATE.fornecedores.find(f=>f.id===b.dataset.id);
+      openConfirm(`Excluir o fornecedor "${item.nome}"? Essa ação não pode ser desfeita.`, async ()=>{
+        try{ await deleteFornecedor(item.id); refresh(); }catch(err){ toast(err.message, true); }
+      });
+    }));
+  }
+  refresh();
+}
+
 function renderSeguranca(container){
   container.innerHTML = `
     <div style="margin-bottom:18px;">
