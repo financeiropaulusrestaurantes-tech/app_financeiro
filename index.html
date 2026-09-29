@@ -426,7 +426,7 @@ async function deleteCategoria(id){
 
 /* ---- Cadastro de cartões (só apelido + últimos 4 dígitos, nunca o número completo) ---- */
 async function addCartao(nome, ultimosDigitos){
-  const [novo] = await sbFetch(`/rest/v1/cartoes`, { method:"POST", body:{ nome, ultimos_digitos: ultimosDigitos } });
+  const [novo] = await sbFetch(`/rest/v1/cartoes`, { method:"POST", body:{ nome, ultimos_digitos: ultimosDigitos, usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome } });
   STATE.cartoes = [...STATE.cartoes, novo].sort((a,b)=>a.nome.localeCompare(b.nome));
   return novo;
 }
@@ -442,7 +442,8 @@ async function deleteCartao(id){
 
 /* ---- Cadastro de fornecedores ---- */
 async function addFornecedor(data){
-  const [novo] = await sbFetch(`/rest/v1/fornecedores`, { method:"POST", body:data });
+  const payload = { ...data, usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome };
+  const [novo] = await sbFetch(`/rest/v1/fornecedores`, { method:"POST", body:payload });
   STATE.fornecedores = [...STATE.fornecedores, novo].sort((a,b)=>a.nome.localeCompare(b.nome));
   return novo;
 }
@@ -3006,7 +3007,7 @@ function openCartaoCadastroModal(item, onSaved, {nested=false}={}){
 }
 function renderCadCartoes(container){
   const sortState = { key:"nome", dir:"asc" };
-  const sortExtractors = { nome: c=>c.nome, digitos: c=>c.ultimos_digitos, criado: c=>c.criado_em };
+  const sortExtractors = { nome: c=>c.nome, digitos: c=>c.ultimos_digitos, criado: c=>c.criado_em, usuario: c=>c.usuario_nome };
 
   function refresh(){
     const dados = ordenarPor(STATE.cartoes, sortState, sortExtractors);
@@ -3020,20 +3021,21 @@ function renderCadCartoes(container){
       </div>
       <div class="card" style="overflow:hidden;">
         <table>
-          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Últimos 4 dígitos","digitos",sortState)}${thSort("Cadastrado em","criado",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Últimos 4 dígitos","digitos",sortState)}${thSort("Cadastrado em","criado",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${dados.map(c=>`
               <tr>
                 <td style="font-weight:500;color:#44403c;">${esc(c.nome)}</td>
                 <td style="color:#78716c;letter-spacing:1px;">•••• ${esc(c.ultimos_digitos)}</td>
                 <td style="color:#a8a29e;white-space:nowrap;">${fmtDate((c.criado_em||"").slice(0,10))}</td>
+                <td style="color:#a8a29e;font-size:12px;">${esc(c.usuario_nome||"—")}</td>
                 <td>
                   <div style="display:flex;justify-content:flex-end;gap:2px;">
                     <button class="icon-btn edit-cartaocad-btn" data-id="${c.id}">${icon("edit",15,"#78716c")}</button>
                     <button class="icon-btn danger del-cartaocad-btn" data-id="${c.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="4" class="empty">Nenhum cartão cadastrado ainda.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="5" class="empty">Nenhum cartão cadastrado ainda.</td></tr>`}
           </tbody>
         </table>
       </div>`;
@@ -3112,11 +3114,49 @@ function openFornecedorModal(item, onSaved){
     }
   });
 }
+function fornecedorDetalheHTML(f){
+  const campo = (label, valor) => `<div><span class="field-label">${esc(label)}</span><p style="margin:4px 0 0;color:#57534e;white-space:pre-wrap;">${esc(valor||"—")}</p></div>`;
+  return `
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div><span class="field-label">Nome</span><p style="margin:4px 0 0;font-weight:600;color:#44403c;font-size:16px;">${esc(f.nome)}</p></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campo("Telefone", f.telefone)}
+        ${campo("E-mail", f.email)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campo("CNPJ/CPF", f.documento)}
+        ${campo("Categoria padrão", f.categoria_padrao)}
+      </div>
+      ${campo("Unidade padrão", f.unidade_padrao)}
+      ${campo("Observações", f.observacoes)}
+      <div style="border-top:1px solid var(--border);padding-top:10px;">
+        <span class="field-label">Cadastrado por</span>
+        <p style="margin:4px 0 0;color:#a8a29e;font-size:12px;">${esc(f.usuario_nome||"—")}</p>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="fd-fechar">Fechar</button>
+        <button type="button" class="btn btn-primary" id="fd-editar">${icon("edit",15)} Editar</button>
+      </div>
+    </div>`;
+}
+function openFornecedorDetalheModal(f, onEdited){
+  openModal({
+    title: f.nome,
+    bodyHTML: fornecedorDetalheHTML(f),
+    mount:(body)=>{
+      body.querySelector("#fd-fechar").addEventListener("click", closeModal);
+      body.querySelector("#fd-editar").addEventListener("click", ()=>{
+        closeModal();
+        openFornecedorModal(f, onEdited);
+      });
+    }
+  });
+}
 function renderCadFornecedores(container){
   const sortState = { key:"nome", dir:"asc" };
   const sortExtractors = {
-    nome: f=>f.nome, telefone: f=>f.telefone, email: f=>f.email,
-    documento: f=>f.documento, categoria: f=>f.categoria_padrao, unidade: f=>f.unidade_padrao,
+    nome: f=>f.nome, telefone: f=>f.telefone, observacoes: f=>f.observacoes,
+    documento: f=>f.documento, categoria: f=>f.categoria_padrao, unidade: f=>f.unidade_padrao, usuario: f=>f.usuario_nome,
   };
 
   function refresh(){
@@ -3125,35 +3165,41 @@ function renderCadFornecedores(container){
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
         <div>
           <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Cadastro de Fornecedores</h2>
-          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.fornecedores.length} fornecedor(es) cadastrado(s).</p>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.fornecedores.length} fornecedor(es) cadastrado(s) · clique numa linha para ver todos os detalhes.</p>
         </div>
         <button class="btn btn-primary" id="btn-novo-fornecedor">${icon("plus",16)} Novo fornecedor</button>
       </div>
       <div class="card" style="overflow:hidden;">
         <table>
-          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("E-mail","email",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${dados.map(f=>`
-              <tr>
+              <tr class="fornecedor-row" data-id="${f.id}" style="cursor:pointer;">
                 <td style="font-weight:500;color:#44403c;">${esc(f.nome)}</td>
                 <td style="color:#78716c;">${esc(f.telefone||"—")}</td>
-                <td style="color:#78716c;">${esc(f.email||"—")}</td>
+                <td style="color:#78716c;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(f.observacoes||"")}">${esc(f.observacoes||"—")}</td>
                 <td style="color:#78716c;">${esc(f.documento||"—")}</td>
                 <td style="color:#78716c;">${esc(f.categoria_padrao||"—")}</td>
                 <td style="color:#78716c;">${esc(f.unidade_padrao||"—")}</td>
+                <td style="color:#a8a29e;font-size:12px;">${esc(f.usuario_nome||"—")}</td>
                 <td>
                   <div style="display:flex;justify-content:flex-end;gap:2px;">
                     <button class="icon-btn edit-fornecedor-btn" data-id="${f.id}">${icon("edit",15,"#78716c")}</button>
                     <button class="icon-btn danger del-fornecedor-btn" data-id="${f.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="7" class="empty">Nenhum fornecedor cadastrado ainda.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="8" class="empty">Nenhum fornecedor cadastrado ainda.</td></tr>`}
           </tbody>
         </table>
       </div>`;
 
     wireSort(container, sortState, refresh);
     container.querySelector("#btn-novo-fornecedor").addEventListener("click", ()=> openFornecedorModal(null, refresh));
+    container.querySelectorAll(".fornecedor-row").forEach(tr=> tr.addEventListener("click", (e)=>{
+      if(e.target.closest(".icon-btn")) return;
+      const item = STATE.fornecedores.find(f=>f.id===tr.dataset.id);
+      openFornecedorDetalheModal(item, refresh);
+    }));
     container.querySelectorAll(".edit-fornecedor-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.fornecedores.find(f=>f.id===b.dataset.id);
       openFornecedorModal(item, refresh);
