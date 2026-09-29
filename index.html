@@ -123,6 +123,7 @@ const REFRESH_KEY = "sb_refresh_token";
 /* ============================== Constantes de domínio ============================== */
 const BRAND = {600:"#2b7551",700:"#1f5c42",800:"#173c2c",500:"#3d9068",400:"#5aab82",200:"#bfe0cd",100:"#e4f3ea",50:"#f6faf7"};
 const DANGER = "#b3452f", DANGER_BG = "#fdf0ee", WARN = "#93630f", WARN_BG = "#fbf1e2";
+const INFO = "#2f5a8a", INFO_BG = "#eaf1f8";
 
 const TIPO_LABEL = { entrada:"Entradas", saida:"Saídas", cartao:"Cartões e Débitos", vale:"Vales", fat_entrada:"Faturamentos — Entradas", fat_saida:"Faturamentos — Saídas" };
 const catsFor = (tipo) => STATE.categorias.filter(c=>c.tipo===tipo).map(c=>c.nome);
@@ -171,6 +172,59 @@ function ordenarPor(lista, state, extractors){
   return copia;
 }
 
+/* ---- Pago em atraso (linha em azul) ---- */
+function pagoAtrasadoRowStyle(l, dataVencimento, dataPagamento){
+  return (l.status==="realizado" && dataVencimento && dataPagamento && dataPagamento > dataVencimento)
+    ? `background:${INFO_BG};` : "";
+}
+
+/* ---- Seleção em massa (checkbox por linha + "marcar todos") ---- */
+function thCheckAll(){
+  return `<th style="width:30px;"><input type="checkbox" class="th-check-all" title="Selecionar todos" style="width:15px;height:15px;cursor:pointer;" /></th>`;
+}
+function tdCheck(id, selecionados){
+  return `<td><input type="checkbox" class="row-check" data-id="${id}" ${selecionados.has(id)?"checked":""} style="width:15px;height:15px;cursor:pointer;" /></td>`;
+}
+function bulkBarHTML(selecionados, label){
+  if(selecionados.size===0) return "";
+  return `<div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;margin-bottom:10px;background:${BRAND[50]};border-color:${BRAND[200]};">
+    <span style="font-size:13px;color:${BRAND[800]};font-weight:600;">${selecionados.size} selecionado(s)</span>
+    <button type="button" class="btn btn-primary btn-bulk-quitar" style="padding:6px 14px;font-size:13px;">${icon("check",14)} ${esc(label)}</button>
+  </div>`;
+}
+function wireBulkSelect(rows, selecionados, elegiveisIds, refresh){
+  const allCb = rows.querySelector(".th-check-all");
+  if(allCb){
+    allCb.checked = elegiveisIds.length>0 && elegiveisIds.every(id=>selecionados.has(id));
+    allCb.addEventListener("change", ()=>{
+      if(allCb.checked) elegiveisIds.forEach(id=>selecionados.add(id));
+      else elegiveisIds.forEach(id=>selecionados.delete(id));
+      refresh();
+    });
+  }
+  rows.querySelectorAll(".row-check").forEach(cb=>{
+    cb.addEventListener("change", ()=>{
+      if(cb.checked) selecionados.add(cb.dataset.id); else selecionados.delete(cb.dataset.id);
+      refresh();
+    });
+  });
+}
+function wireBulkQuitar(rows, selecionados, {quitarFn, refresh, confirmMsg}){
+  const btn = rows.querySelector(".btn-bulk-quitar");
+  if(!btn) return;
+  btn.addEventListener("click", ()=>{
+    const ids = Array.from(selecionados);
+    openConfirm(confirmMsg(ids.length), async ()=>{
+      btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Processando...`;
+      try{
+        await Promise.all(ids.map(id=>quitarFn(id)));
+        selecionados.clear();
+        refresh();
+      }catch(err){ toast(err.message, true); btn.disabled=false; }
+    });
+  });
+}
+
 function icon(name, size=16, color="currentColor", sw=2){
   const P = {
     plus:'<line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>',
@@ -195,6 +249,7 @@ function icon(name, size=16, color="currentColor", sw=2){
     sparkles:'<path d="M12 2.5 13.4 7 18 8.4 13.4 9.9 12 14.5 10.6 9.9 6 8.4 10.6 7Z"/><path d="M19 15l.6 1.8 1.9.6-1.9.6L19 20l-.6-2-1.9-.6 1.9-.6Z"/>',
     card:'<rect x="2" y="5" width="20" height="14" rx="2.5"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="10" y2="15"/>',
     folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
+    download:'<path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><path d="M5 20h14"/>',
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${P[name]||""}</svg>`;
 }
@@ -452,7 +507,7 @@ async function deleteVale(id){
   await sbFetch(`/rest/v1/vale_lancamentos?id=eq.${id}`, { method:"DELETE" });
   STATE.valeLancamentos = STATE.valeLancamentos.filter(l=>l.id!==id);
 }
-async function quitarVale(id){ await editVale(id, { status:"realizado" }); }
+async function quitarVale(id){ await editVale(id, { status:"realizado", data_pagamento: todayISO() }); }
 
 /* ---- Faturamentos (clone completo da Carteira + duplicatas) ---- */
 async function addFatLancamento(data){
@@ -1071,6 +1126,7 @@ function renderLancamentosView(container, tipo){
     valor: l => l.valor,
     usuario: l => l.usuario_nome,
   };
+  const selecionados = new Set();
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -1110,21 +1166,25 @@ function renderLancamentosView(container, tipo){
       return true;
     });
     const dadosOrdenados = ordenarPor(dados, sortState, sortExtractors);
+    const elegiveis = dadosOrdenados.filter(l=>l.status==="previsto").map(l=>l.id);
+    Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
     document.getElementById("lanc-summary").innerHTML = `${dados.length} lançamento(s) · Total realizado: <b style="color:${isEntrada?BRAND[600]:DANGER};">${currency(total)}</b>`;
 
     const rows = document.getElementById("lanc-results");
     rows.innerHTML = `
+      ${bulkBarHTML(selecionados, `Marcar como ${isEntrada?"recebido":"pago"}`)}
       <div class="card" style="overflow:hidden;">
         <table>
           <thead><tr>
-            ${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
+            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
             ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Lançado por","usuario",sortState)}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr>
+              <tr style="${pagoAtrasadoRowStyle(l, l.data_prevista, l.data_realizada)}">
+                ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
                 <td style="color:#57534e;">${esc(l.categoria)}</td>
@@ -1138,12 +1198,14 @@ function renderLancamentosView(container, tipo){
                     <button class="icon-btn danger del-btn" data-id="${l.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="8" class="empty">Nenhum lançamento encontrado para os filtros aplicados.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="9" class="empty">Nenhum lançamento encontrado para os filtros aplicados.</td></tr>`}
           </tbody>
         </table>
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireBulkSelect(rows, selecionados, elegiveis, refresh);
+    wireBulkQuitar(rows, selecionados, { quitarFn: quitarConta, refresh, confirmMsg: n=>`Marcar ${n} lançamento(s) como ${isEntrada?"recebido(s)":"pago(s)"} com a data de hoje?` });
     rows.querySelectorAll(".edit-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.lancamentos.find(l=>l.id===b.dataset.id);
       openLancamentoModal(tipo, item, refresh);
@@ -1574,6 +1636,7 @@ function renderCartoesLancamentos(container){
     portador: l => l.portador,
     valor: l => l.valor,
   };
+  const selecionados = new Set();
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -1612,21 +1675,25 @@ function renderCartoesLancamentos(container){
       return true;
     });
     const dadosOrdenados = ordenarPor(dados, sortState, sortExtractors);
+    const elegiveis = dadosOrdenados.filter(l=>l.status==="previsto").map(l=>l.id);
+    Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
     document.getElementById("cartao-summary").innerHTML = `${dados.length} lançamento(s) · Total pago: <b style="color:${DANGER};">${currency(total)}</b>`;
 
     const rows = document.getElementById("cartao-results");
     rows.innerHTML = `
+      ${bulkBarHTML(selecionados, "Marcar como pago")}
       <div class="card" style="overflow:hidden;">
         <table>
           <thead><tr>
-            ${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Cartão","cartao",sortState)}${thSort("Portador","portador",sortState)}<th>Parcela</th>
+            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Cartão","cartao",sortState)}${thSort("Portador","portador",sortState)}<th>Parcela</th>
             ${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr>
+              <tr style="${pagoAtrasadoRowStyle(l, l.data, l.data_pagamento)}">
+                ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${cartaoBadge(l.status)}</td>
                 <td style="color:#57534e;">${esc(l.categoria)}</td>
@@ -1641,12 +1708,14 @@ function renderCartoesLancamentos(container){
                     <button class="icon-btn danger del-cartao-btn" data-id="${l.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="9" class="empty">Nenhum gasto encontrado para os filtros aplicados.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="10" class="empty">Nenhum gasto encontrado para os filtros aplicados.</td></tr>`}
           </tbody>
         </table>
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireBulkSelect(rows, selecionados, elegiveis, refresh);
+    wireBulkQuitar(rows, selecionados, { quitarFn: quitarParcela, refresh, confirmMsg: n=>`Marcar ${n} gasto(s) como pago(s) com a data de hoje?` });
     rows.querySelectorAll(".edit-cartao-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.cartaoLancamentos.find(l=>l.id===b.dataset.id);
       openCartaoEditModal(item, refresh);
@@ -1847,6 +1916,7 @@ function renderValesLancamentos(container){
     unidade: l => l.unidade,
     valor: l => l.valor,
   };
+  const selecionados = new Set();
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -1885,21 +1955,25 @@ function renderValesLancamentos(container){
       return true;
     });
     const dadosOrdenados = ordenarPor(dados, sortState, sortExtractors);
+    const elegiveis = dadosOrdenados.filter(l=>l.status==="previsto").map(l=>l.id);
+    Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
     document.getElementById("vale-summary").innerHTML = `${dados.length} vale(s) · Total recebido: <b style="color:${BRAND[600]};">${currency(total)}</b>`;
 
     const rows = document.getElementById("vale-results");
     rows.innerHTML = `
+      ${bulkBarHTML(selecionados, "Marcar como recebido")}
       <div class="card" style="overflow:hidden;">
         <table>
           <thead><tr>
-            ${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Origem","origem",sortState)}${thSort("Unidade","unidade",sortState)}
+            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Origem","origem",sortState)}${thSort("Unidade","unidade",sortState)}
             ${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr>
+              <tr style="${pagoAtrasadoRowStyle(l, l.data, l.data_pagamento)}">
+                ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${valeBadge(l.status)}</td>
                 <td style="color:#57534e;">${esc(l.categoria)}</td>
@@ -1913,12 +1987,14 @@ function renderValesLancamentos(container){
                     <button class="icon-btn danger del-vale-btn" data-id="${l.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="8" class="empty">Nenhum vale encontrado para os filtros aplicados.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="9" class="empty">Nenhum vale encontrado para os filtros aplicados.</td></tr>`}
           </tbody>
         </table>
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireBulkSelect(rows, selecionados, elegiveis, refresh);
+    wireBulkQuitar(rows, selecionados, { quitarFn: quitarVale, refresh, confirmMsg: n=>`Marcar ${n} vale(s) como recebido(s) com a data de hoje?` });
     rows.querySelectorAll(".edit-vale-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.valeLancamentos.find(l=>l.id===b.dataset.id);
       openValeModal(item, refresh);
@@ -2149,6 +2225,7 @@ function renderFatLancamentosView(container, tipo){
     valor: l => l.valor,
     usuario: l => l.usuario_nome,
   };
+  const selecionados = new Set();
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -2188,6 +2265,8 @@ function renderFatLancamentosView(container, tipo){
       return true;
     });
     const dadosOrdenados = ordenarPor(dados, sortState, sortExtractors);
+    const elegiveis = dadosOrdenados.filter(l=>l.status==="previsto").map(l=>l.id);
+    Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const totalFiltrado = dados.reduce((s,l)=> s + l.valor, 0);
     const totalRealizado = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
@@ -2197,17 +2276,19 @@ function renderFatLancamentosView(container, tipo){
 
     const rows = document.getElementById("fat-lanc-results");
     rows.innerHTML = `
+      ${bulkBarHTML(selecionados, `Marcar como ${isEntrada?"realizado":"pago"}`)}
       <div class="card" style="overflow:hidden;">
         <table>
           <thead><tr>
-            ${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
+            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
             ${isEntrada ? `${thSort("Vencimento","vencimento",sortState)}<th>Prazo</th>` : ""}
             ${!isEntrada ? `${thSort("Duplicata","duplicata",sortState)}` : ""}
             ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Lançado por","usuario",sortState)}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr>
+              <tr style="${pagoAtrasadoRowStyle(l, l.data_prevista, l.data_realizada)}">
+                ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
                 <td style="color:#57534e;">${esc(l.categoria)}</td>
@@ -2223,12 +2304,14 @@ function renderFatLancamentosView(container, tipo){
                     <button class="icon-btn danger del-fat-btn" data-id="${l.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="${isEntrada?10:9}" class="empty">Nenhum lançamento encontrado para os filtros aplicados.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="${isEntrada?11:10}" class="empty">Nenhum lançamento encontrado para os filtros aplicados.</td></tr>`}
           </tbody>
         </table>
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireBulkSelect(rows, selecionados, elegiveis, refresh);
+    wireBulkQuitar(rows, selecionados, { quitarFn: quitarFatConta, refresh, confirmMsg: n=>`Marcar ${n} lançamento(s) como ${isEntrada?"realizado(s)":"pago(s)"} com a data de hoje?` });
     rows.querySelectorAll(".edit-fat-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.faturamentoLancamentos.find(l=>l.id===b.dataset.id);
       openFatLancamentoModal(tipo, item, refresh);
@@ -2346,6 +2429,38 @@ function renderFatContas(container){
 
   build();
 }
+/* ---- Exportação de duplicatas em XML (Títulos a Pagar) ---- */
+function xmlEscape(s){ return String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&apos;"}[c])); }
+function fornecedorDocumentoPorNome(nome){
+  const alvo = String(nome||"").trim().toLowerCase();
+  const f = STATE.fornecedores.find(f=>f.nome.trim().toLowerCase()===alvo);
+  return f ? (f.documento||"") : "";
+}
+function gerarTitulosPagarXML(lista){
+  const linhas = lista.map(l=>{
+    const pago = l.status==="realizado";
+    return `  <titulo>
+    <vencimento>${xmlEscape(l.data_prevista)}</vencimento>
+    <cnpjCpf>${xmlEscape(fornecedorDocumentoPorNome(l.contraparte))}</cnpjCpf>
+    <fornecedor>${xmlEscape(l.contraparte)}</fornecedor>
+    <parcela>0</parcela>
+    <tipoDeBaixa>${xmlEscape(pago ? "Baixa manual" : "")}</tipoDeBaixa>
+    <valorOriginal>${Number(l.valor||0).toFixed(2)}</valorOriginal>
+    <valorLiquido>${Number(l.valor||0).toFixed(2)}</valorLiquido>
+    <valorPago>${Number(pago ? l.valor : 0).toFixed(2)}</valorPago>
+    <numeroDuplicata>${xmlEscape(l.numero_duplicata||"")}</numeroDuplicata>
+  </titulo>`;
+  }).join("\n");
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<titulosAPagar geradoEm="${new Date().toISOString()}">\n${linhas}\n</titulosAPagar>\n`;
+}
+function baixarArquivoTexto(conteudo, nomeArquivo, mime){
+  const blob = new Blob([conteudo], {type: mime||"text/plain"});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = nomeArquivo;
+  document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
 function renderFatDuplicatas(container){
   const hoje = todayISO();
   const filters = { busca:"", de:"", ate:"", unidade:"", categoria:"", status:"" };
@@ -2359,6 +2474,7 @@ function renderFatDuplicatas(container){
     unidade: l => l.unidade,
     valor: l => l.valor,
   };
+  const selecionados = new Set();
 
   function build(){
     const todas = STATE.faturamentoLancamentos.filter(l=>l.tipo==="saida" && l.duplicata);
@@ -2411,19 +2527,26 @@ function renderFatDuplicatas(container){
       return true;
     });
     const duplicatasOrdenadas = ordenarPor(duplicatas, sortState, sortExtractors);
+    const elegiveis = duplicatasOrdenadas.filter(l=>l.status==="previsto").map(l=>l.id);
+    Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const totalAberto = duplicatas.filter(l=>l.status==="previsto").reduce((s,l)=>s+l.valor,0);
     document.getElementById("dup-summary").innerHTML = `${duplicatas.length} duplicata(s) encontrada(s) · Em aberto: <b style="color:${DANGER};">${currency(totalAberto)}</b>`;
 
     const rows = document.getElementById("dup-results");
     rows.innerHTML = `
+      <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">
+        <button type="button" class="btn btn-outline" id="btn-exportar-dup-xml" style="padding:6px 14px;font-size:13px;">${icon("download",14)} Exportar XML</button>
+      </div>
+      ${bulkBarHTML(selecionados, "Marcar como pago")}
       <div class="card" style="overflow:hidden;">
         <table>
-          <thead><tr>${thSort("Vencimento","vencimento",sortState)}${thSort("Status","status",sortState)}${thSort("Nº Duplicata","numero",sortState)}${thSort("Fornecedor","contraparte",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thCheckAll()}${thSort("Vencimento","vencimento",sortState)}${thSort("Status","status",sortState)}${thSort("Nº Duplicata","numero",sortState)}${thSort("Fornecedor","contraparte",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${duplicatasOrdenadas.map(l=>{
               const atrasado = l.status==="previsto" && l.data_prevista < hoje;
-              return `<tr>
+              return `<tr style="${pagoAtrasadoRowStyle(l, l.data_prevista, l.data_realizada)}">
+                ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;${atrasado?`color:${DANGER};font-weight:600;`:""}">${fmtDate(l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
                 <td style="color:#78716c;">${esc(l.numero_duplicata||"—")}</td>
@@ -2433,12 +2556,20 @@ function renderFatDuplicatas(container){
                 <td style="text-align:right;font-weight:600;color:${DANGER};">${currency(l.valor)}</td>
                 <td style="text-align:right;">${l.status==="previsto" ? `<button class="quitar-dup-btn" data-id="${l.id}" style="border:none;background:none;font-size:11px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;">Marcar como pago</button>` : ""}</td>
               </tr>`;
-            }).join("") || `<tr><td colspan="8" class="empty">Nenhuma duplicata encontrada para os filtros aplicados.</td></tr>`}
+            }).join("") || `<tr><td colspan="9" class="empty">Nenhuma duplicata encontrada para os filtros aplicados.</td></tr>`}
           </tbody>
         </table>
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireBulkSelect(rows, selecionados, elegiveis, refresh);
+    wireBulkQuitar(rows, selecionados, { quitarFn: quitarFatConta, refresh, confirmMsg: n=>`Marcar ${n} duplicata(s) como paga(s) com a data de hoje?` });
+    rows.querySelector("#btn-exportar-dup-xml").addEventListener("click", ()=>{
+      const alvo = selecionados.size>0 ? duplicatasOrdenadas.filter(l=>selecionados.has(l.id)) : duplicatasOrdenadas;
+      if(alvo.length===0){ toast("Nenhuma duplicata para exportar.", true); return; }
+      baixarArquivoTexto(gerarTitulosPagarXML(alvo), `titulos-a-pagar-${todayISO()}.xml`, "application/xml");
+      toast(`${alvo.length} título(s) exportado(s) em XML.`);
+    });
     rows.querySelectorAll(".quitar-dup-btn").forEach(b=> b.addEventListener("click", async ()=>{
       try{ await quitarFatConta(b.dataset.id); refresh(); }catch(err){ toast(err.message, true); }
     }));
