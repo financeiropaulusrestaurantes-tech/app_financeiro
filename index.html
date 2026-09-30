@@ -91,7 +91,7 @@
 
   .overlay{position:fixed; inset:0; background:rgba(0,0,0,.32); backdrop-filter:blur(2px); display:flex; align-items:center; justify-content:center; padding:16px; z-index:50;}
   .modal{background:#fff; border-radius:18px; width:100%; max-width:460px; box-shadow:0 20px 50px rgba(0,0,0,.15); max-height:88vh; display:flex; flex-direction:column;}
-  .modal.wide{max-width:640px;}
+  .modal.wide{max-width:780px;}
   .modal-head{display:flex; align-items:center; justify-content:space-between; padding:16px 20px; border-bottom:1px solid var(--border);}
   .modal-body{padding:20px; overflow-y:auto;}
   .confirm-box{background:#fff; border-radius:18px; width:100%; max-width:380px; padding:20px; box-shadow:0 20px 50px rgba(0,0,0,.15);}
@@ -2295,7 +2295,7 @@ function renderFatLancamentosView(container, tipo){
         <p class="muted" style="margin:4px 0 0;font-size:13px;" id="fat-lanc-summary"></p>
       </div>
       <div style="display:flex;gap:8px;">
-        ${isEntrada ? `<button class="btn btn-outline" id="btn-importar-fat-lanc">${icon("download",16)} Importar planilha</button>` : ""}
+        <button class="btn btn-outline" id="btn-importar-fat-lanc">${icon("download",16)} Importar planilha</button>
         <button class="btn btn-primary" id="btn-novo-fat-lanc">${icon("plus",16)} Novo lançamento</button>
       </div>
     </div>
@@ -2395,8 +2395,7 @@ function renderFatLancamentosView(container, tipo){
   }
 
   container.querySelector("#btn-novo-fat-lanc").addEventListener("click", ()=> openFatLancamentoModal(tipo, null, refresh));
-  const btnImportarFatLanc = container.querySelector("#btn-importar-fat-lanc");
-  if(btnImportarFatLanc) btnImportarFatLanc.addEventListener("click", ()=> openImportarTitulosModal("entrada", refresh));
+  container.querySelector("#btn-importar-fat-lanc").addEventListener("click", ()=> openImportarTitulosModal(tipo, refresh));
   ["busca","de","ate","unidade","categoria","status"].forEach(k=>{
     const el = container.querySelector(`#ffl-${k}`);
     el.addEventListener(k==="busca"?"input":"change", ()=>{ filters[k]=el.value; refresh(); });
@@ -2645,7 +2644,7 @@ function previewImportEditavelHTML(tipo, linhas, erros){
       ${erros.length ? `<p style="margin:6px 0 0;font-size:12px;color:${DANGER};">${erros.length} linha(s) da planilha ignorada(s) por falta de vencimento ou nome.</p>` : ""}
     </div>
     <p class="field-hint" style="margin-top:0;">Revise abaixo: edite qualquer campo ou remova uma linha antes de confirmar — só o que ficar na lista será importado.</p>
-    <div style="max-height:320px;overflow-y:auto;border:1px solid var(--border);border-radius:10px;">
+    <div style="max-height:48vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px;">
       <table style="width:100%;">
         <thead style="position:sticky;top:0;background:#fff;">
           <tr>
@@ -2678,6 +2677,7 @@ function wireLinhasImportEditaveis(body, submitBtn){
 function openImportarTitulosModal(tipo, onImported){
   openModal({
     title: tipo==="entrada" ? "Importar Títulos a Receber" : "Importar Títulos a Pagar",
+    wide: true,
     bodyHTML: importarTitulosFormHTML(tipo),
     mount:(body)=>{
       const fileInput = body.querySelector("#imp-arquivo");
