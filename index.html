@@ -53,11 +53,12 @@
   .badge-pending{background:var(--warn-bg); color:var(--warn);}
   .dot{width:6px; height:6px; border-radius:999px; display:inline-block;}
 
-  table{width:100%; border-collapse:collapse; font-size:14px;}
-  thead th{text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:#a8a29e; padding:11px 14px; border-bottom:1px solid var(--border);}
+  table{width:100%; min-width:max-content; border-collapse:collapse; font-size:14px;}
+  thead th{text-align:left; font-size:11px; text-transform:uppercase; letter-spacing:.03em; color:#a8a29e; padding:11px 14px; border-bottom:1px solid var(--border); white-space:nowrap;}
   thead th.th-sort:hover{color:var(--b700);}
-  tbody td{padding:11px 14px; border-bottom:1px solid #faf9f6;}
+  tbody td{padding:11px 14px; border-bottom:1px solid #faf9f6; white-space:nowrap;}
   tbody tr:hover{background:#fafaf8;}
+  .top-scrollbar{overflow-x:auto; overflow-y:hidden; height:14px; margin-bottom:6px;}
 
   #root{min-height:100vh;}
   .app-shell{min-height:100vh; display:flex;}
@@ -101,7 +102,7 @@
   .login-wrap{min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--b50);}
   .login-box{width:100%; max-width:360px;}
 
-  .empty{text-align:center; color:#a8a29e; padding:40px 10px; font-size:14px;}
+  .empty{text-align:center; color:#a8a29e; padding:40px 10px; font-size:14px; white-space:normal;}
   .muted{color:#a8a29e;}
   .list-row{display:flex; align-items:center; justify-content:space-between; gap:12px; padding:11px 16px; border-bottom:1px solid #faf9f6;}
   .list-row:last-child{border-bottom:none;}
@@ -217,6 +218,26 @@ function wireBulkQuitar(rows, selecionados, {quitarFn, refresh, confirmMsg}){
         refresh();
       }catch(err){ toast(err.message, true); btn.disabled=false; }
     });
+  });
+}
+
+/* ---- Barra de scroll horizontal duplicada no topo da tabela ----
+   O scroll nativo do navegador fica embaixo da tabela, que pode ser bem
+   comprida — obrigando a rolar a página inteira até o fim só para achar a
+   barra. Esta função cria uma barrinha fina logo acima da tabela, com a
+   mesma largura de rolagem, sincronizada nos dois sentidos. */
+function wireTopScroll(container){
+  container.querySelectorAll(".card").forEach(card=>{
+    const table = card.firstElementChild;
+    if(!table || table.tagName!=="TABLE") return; // só cards cuja tabela é o conteúdo principal
+    if(table.scrollWidth <= card.clientWidth + 1) return; // cabe inteira, sem necessidade de barra
+    const bar = document.createElement("div");
+    bar.className = "top-scrollbar";
+    bar.innerHTML = `<div style="width:${table.scrollWidth}px;height:1px;"></div>`;
+    card.parentNode.insertBefore(bar, card);
+    let sincronizando = false;
+    bar.addEventListener("scroll", ()=>{ if(sincronizando) return; sincronizando=true; card.scrollLeft = bar.scrollLeft; sincronizando=false; });
+    card.addEventListener("scroll", ()=>{ if(sincronizando) return; sincronizando=true; bar.scrollLeft = card.scrollLeft; sincronizando=false; });
   });
 }
 
@@ -641,7 +662,7 @@ async function criarUsuario({ nome, email, senha, cargo, permissoes }){
   const data = await sbAuthSignup(email, senha);
   const newId = data.user && data.user.id;
   if(newId){
-    const [perfil] = await sbFetch(`/rest/v1/profiles?id=eq.${newId}`, { method:"PATCH", body:{ nome, cargo, permissoes: permissoes||[] } });
+    const [perfil] = await sbFetch(`/rest/v1/profiles?id=eq.${newId}`, { method:"PATCH", body:{ nome, email, cargo, permissoes: permissoes||[] } });
     STATE.users = [...STATE.users, perfil].sort((a,b)=>a.nome.localeCompare(b.nome));
   }
   return data;
@@ -1160,7 +1181,7 @@ function renderLancamentosView(container, tipo){
     contraparte: l => l.contraparte,
     unidade: l => l.unidade,
     valor: l => l.valor,
-    usuario: l => l.usuario_nome,
+    observacao: l => l.observacao,
   };
   const selecionados = new Set();
 
@@ -1211,11 +1232,11 @@ function renderLancamentosView(container, tipo){
     const rows = document.getElementById("lanc-results");
     rows.innerHTML = `
       ${bulkBarHTML(selecionados, `Marcar como ${isEntrada?"recebido":"pago"}`)}
-      <div class="card" style="overflow:hidden;">
+      <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
             ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
-            ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Lançado por","usuario",sortState)}<th style="text-align:right;">Ações</th>
+            ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Observações","observacao",sortState)}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
@@ -1227,7 +1248,7 @@ function renderLancamentosView(container, tipo){
                 <td style="font-weight:500;color:#44403c;">${esc(l.contraparte)}</td>
                 <td style="color:#78716c;">${esc(l.unidade)}</td>
                 <td style="text-align:right;font-weight:600;color:${isEntrada?BRAND[600]:DANGER};">${currency(l.valor)}</td>
-                <td style="color:#a8a29e;font-size:12px;">${esc(l.usuario_nome)}</td>
+                <td style="color:#a8a29e;font-size:12px;">${esc(l.observacao||"—")}</td>
                 <td>
                   <div style="display:flex;justify-content:flex-end;gap:2px;">
                     <button class="icon-btn edit-btn" data-id="${l.id}">${icon("edit",15,"#78716c")}</button>
@@ -1240,6 +1261,7 @@ function renderLancamentosView(container, tipo){
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireTopScroll(rows);
     wireBulkSelect(rows, selecionados, elegiveis, refresh);
     wireBulkQuitar(rows, selecionados, { quitarFn: quitarConta, refresh, confirmMsg: n=>`Marcar ${n} lançamento(s) como ${isEntrada?"recebido(s)":"pago(s)"} com a data de hoje?` });
     rows.querySelectorAll(".edit-btn").forEach(b=> b.addEventListener("click", ()=>{
@@ -1445,7 +1467,7 @@ function renderPersonalizado(container){
           <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Evolução mensal (líquido)</h3>
           ${serieKeys.length ? `<canvas id="chart-pz" height="180"></canvas>` : `<p class="empty">Sem lançamentos realizados para esse recorte.</p>`}
         </div>
-        <div class="card" style="overflow:hidden;">
+        <div class="card" style="overflow-x:auto;">
           <table><thead><tr><th>Data</th><th>Tipo</th><th>Categoria</th><th>Contraparte</th><th>Unidade</th><th style="text-align:right;">Valor</th></tr></thead>
           <tbody>${filtrados.sort((a,b)=>(b.data_realizada||b.data_prevista).localeCompare(a.data_realizada||a.data_prevista)).map(l=>`
             <tr><td>${fmtDate(l.data_realizada||l.data_prevista)}</td><td>${l.tipo==="entrada"?"Entrada":"Saída"}</td>
@@ -1457,6 +1479,7 @@ function renderPersonalizado(container){
     container.querySelector("#pz-modo").addEventListener("change",(e)=>{ modo=e.target.value; valorSel=""; build(); });
     const valSel = container.querySelector("#pz-valor");
     if(valSel) valSel.addEventListener("change",(e)=>{ valorSel=e.target.value; build(); });
+    wireTopScroll(container);
 
     if(valorSel && serieKeys.length){
       const ctx = document.getElementById("chart-pz");
@@ -1720,7 +1743,7 @@ function renderCartoesLancamentos(container){
     const rows = document.getElementById("cartao-results");
     rows.innerHTML = `
       ${bulkBarHTML(selecionados, "Marcar como pago")}
-      <div class="card" style="overflow:hidden;">
+      <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
             ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Cartão","cartao",sortState)}${thSort("Portador","portador",sortState)}<th>Parcela</th>
@@ -1750,6 +1773,7 @@ function renderCartoesLancamentos(container){
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireTopScroll(rows);
     wireBulkSelect(rows, selecionados, elegiveis, refresh);
     wireBulkQuitar(rows, selecionados, { quitarFn: quitarParcela, refresh, confirmMsg: n=>`Marcar ${n} gasto(s) como pago(s) com a data de hoje?` });
     rows.querySelectorAll(".edit-cartao-btn").forEach(b=> b.addEventListener("click", ()=>{
@@ -2000,7 +2024,7 @@ function renderValesLancamentos(container){
     const rows = document.getElementById("vale-results");
     rows.innerHTML = `
       ${bulkBarHTML(selecionados, "Marcar como recebido")}
-      <div class="card" style="overflow:hidden;">
+      <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
             ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Origem","origem",sortState)}${thSort("Unidade","unidade",sortState)}
@@ -2029,6 +2053,7 @@ function renderValesLancamentos(container){
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireTopScroll(rows);
     wireBulkSelect(rows, selecionados, elegiveis, refresh);
     wireBulkQuitar(rows, selecionados, { quitarFn: quitarVale, refresh, confirmMsg: n=>`Marcar ${n} vale(s) como recebido(s) com a data de hoje?` });
     rows.querySelectorAll(".edit-vale-btn").forEach(b=> b.addEventListener("click", ()=>{
@@ -2259,7 +2284,7 @@ function renderFatLancamentosView(container, tipo){
     vencimento: l => l.data_vencimento,
     duplicata: l => l.duplicata ? (l.numero_duplicata||"Sim") : "",
     valor: l => l.valor,
-    usuario: l => l.usuario_nome,
+    observacao: l => l.observacao,
   };
   const selecionados = new Set();
 
@@ -2316,13 +2341,13 @@ function renderFatLancamentosView(container, tipo){
     const rows = document.getElementById("fat-lanc-results");
     rows.innerHTML = `
       ${bulkBarHTML(selecionados, `Marcar como ${isEntrada?"realizado":"pago"}`)}
-      <div class="card" style="overflow:hidden;">
+      <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
             ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
             ${isEntrada ? `${thSort("Vencimento","vencimento",sortState)}<th>Prazo</th>` : ""}
             ${!isEntrada ? `${thSort("Duplicata","duplicata",sortState)}` : ""}
-            ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Lançado por","usuario",sortState)}<th style="text-align:right;">Ações</th>
+            ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Observações","observacao",sortState)}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
@@ -2336,7 +2361,7 @@ function renderFatLancamentosView(container, tipo){
                 ${isEntrada ? `<td style="white-space:nowrap;color:#78716c;">${l.data_vencimento?fmtDate(l.data_vencimento):"—"}</td><td>${prazoBadge(l)}</td>` : ""}
                 ${!isEntrada ? `<td style="color:#78716c;font-size:12px;">${l.duplicata ? esc(l.numero_duplicata||"Sim") : "—"}</td>` : ""}
                 <td style="text-align:right;font-weight:600;color:${isEntrada?BRAND[600]:DANGER};">${currency(l.valor)}</td>
-                <td style="color:#a8a29e;font-size:12px;">${esc(l.usuario_nome)}</td>
+                <td style="color:#a8a29e;font-size:12px;">${esc(l.observacao||"—")}</td>
                 <td>
                   <div style="display:flex;justify-content:flex-end;gap:2px;">
                     <button class="icon-btn edit-fat-btn" data-id="${l.id}">${icon("edit",15,"#78716c")}</button>
@@ -2349,6 +2374,7 @@ function renderFatLancamentosView(container, tipo){
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireTopScroll(rows);
     wireBulkSelect(rows, selecionados, elegiveis, refresh);
     wireBulkQuitar(rows, selecionados, { quitarFn: quitarFatConta, refresh, confirmMsg: n=>`Marcar ${n} lançamento(s) como ${isEntrada?"realizado(s)":"pago(s)"} com a data de hoje?` });
     rows.querySelectorAll(".edit-fat-btn").forEach(b=> b.addEventListener("click", ()=>{
@@ -2852,7 +2878,7 @@ function renderFatDuplicatas(container){
         <button type="button" class="btn btn-outline" id="btn-exportar-dup-xml" style="padding:6px 14px;font-size:13px;">${icon("download",14)} Exportar XML</button>
       </div>
       ${bulkBarHTML(selecionados, "Marcar como pago")}
-      <div class="card" style="overflow:hidden;">
+      <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>${thCheckAll()}${thSort("Vencimento","vencimento",sortState)}${thSort("Status","status",sortState)}${thSort("Nº Duplicata","numero",sortState)}${thSort("Fornecedor","contraparte",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
@@ -2875,6 +2901,7 @@ function renderFatDuplicatas(container){
       </div>`;
 
     wireSort(rows, sortState, refresh);
+    wireTopScroll(rows);
     wireBulkSelect(rows, selecionados, elegiveis, refresh);
     wireBulkQuitar(rows, selecionados, { quitarFn: quitarFatConta, refresh, confirmMsg: n=>`Marcar ${n} duplicata(s) como paga(s) com a data de hoje?` });
     rows.querySelector("#btn-exportar-dup-xml").addEventListener("click", ()=>{
@@ -3013,7 +3040,7 @@ function renderFatPersonalizado(container){
           <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Evolução mensal (líquido)</h3>
           ${serieKeys.length ? `<canvas id="chart-fat-pz" height="180"></canvas>` : `<p class="empty">Sem lançamentos realizados para esse recorte.</p>`}
         </div>
-        <div class="card" style="overflow:hidden;">
+        <div class="card" style="overflow-x:auto;">
           <table><thead><tr><th>Data</th><th>Tipo</th><th>Categoria</th><th>Contraparte</th><th>Unidade</th><th style="text-align:right;">Valor</th></tr></thead>
           <tbody>${filtrados.sort((a,b)=>(b.data_realizada||b.data_prevista).localeCompare(a.data_realizada||a.data_prevista)).map(l=>`
             <tr><td>${fmtDate(l.data_realizada||l.data_prevista)}</td><td>${l.tipo==="entrada"?"Entrada":"Saída"}</td>
@@ -3025,6 +3052,7 @@ function renderFatPersonalizado(container){
     container.querySelector("#fpz-modo").addEventListener("change",(e)=>{ modo=e.target.value; valorSel=""; build(); });
     const valSel = container.querySelector("#fpz-valor");
     if(valSel) valSel.addEventListener("change",(e)=>{ valorSel=e.target.value; build(); });
+    wireTopScroll(container);
 
     if(valorSel && serieKeys.length){
       const ctx = document.getElementById("chart-fat-pz");
@@ -3145,7 +3173,7 @@ function renderCadCartoes(container){
         </div>
         <button class="btn btn-primary" id="btn-novo-cartao-cad">${icon("plus",16)} Novo cartão</button>
       </div>
-      <div class="card" style="overflow:hidden;">
+      <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Últimos 4 dígitos","digitos",sortState)}${thSort("Cadastrado em","criado",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
@@ -3167,6 +3195,7 @@ function renderCadCartoes(container){
       </div>`;
 
     wireSort(container, sortState, refresh);
+    wireTopScroll(container);
     container.querySelector("#btn-novo-cartao-cad").addEventListener("click", ()=> openCartaoCadastroModal(null, refresh));
     container.querySelectorAll(".edit-cartaocad-btn").forEach(b=> b.addEventListener("click", ()=>{
       const item = STATE.cartoes.find(c=>c.id===b.dataset.id);
@@ -3295,7 +3324,7 @@ function renderCadFornecedores(container){
         </div>
         <button class="btn btn-primary" id="btn-novo-fornecedor">${icon("plus",16)} Novo fornecedor</button>
       </div>
-      <div class="card" style="overflow:hidden;">
+      <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
@@ -3320,6 +3349,7 @@ function renderCadFornecedores(container){
       </div>`;
 
     wireSort(container, sortState, refresh);
+    wireTopScroll(container);
     container.querySelector("#btn-novo-fornecedor").addEventListener("click", ()=> openFornecedorModal(null, refresh));
     container.querySelectorAll(".fornecedor-row").forEach(tr=> tr.addEventListener("click", (e)=>{
       if(e.target.closest(".icon-btn")) return;
@@ -3516,13 +3546,14 @@ function renderUsuarios(container){
         <p class="muted" style="margin:4px 0 0;font-size:13px;">Gerencie quem tem acesso ao sistema financeiro e a quais abas cada um pode chegar.</p></div>
         <button class="btn btn-primary" id="btn-novo-user">${icon("plus",16)} Novo usuário</button>
       </div>
-      <div class="card" style="overflow:hidden;">
-        <table><thead><tr><th>Nome</th><th>Perfil</th><th>Abas liberadas</th><th style="text-align:right;">Ações</th></tr></thead>
+      <div class="card" style="overflow-x:auto;">
+        <table><thead><tr><th>Nome</th><th>E-mail</th><th>Perfil</th><th>Abas liberadas</th><th style="text-align:right;">Ações</th></tr></thead>
         <tbody>${STATE.users.map(u=>{
           const podeEditar = STATE.currentUser.cargo==="super_admin" || (STATE.currentUser.cargo==="admin" && u.cargo==="usuario");
           return `
           <tr>
             <td style="font-weight:500;color:#44403c;">${esc(u.nome)}${u.id===STATE.currentUser.id?` <span class="muted" style="font-size:10px;">(você)</span>`:""}</td>
+            <td style="color:#78716c;">${esc(u.email||"—")}</td>
             <td>${cargoBadge(u.cargo)}</td>
             <td>${permissoesBadges(u)}</td>
             <td><div style="display:flex;justify-content:flex-end;gap:2px;">
@@ -3536,6 +3567,7 @@ function renderUsuarios(container){
     container.querySelectorAll(".edit-user-btn").forEach(b=> b.addEventListener("click", ()=>{
       openUsuarioModal(STATE.users.find(u=>u.id===b.dataset.id), build);
     }));
+    wireTopScroll(container);
   }
   build();
 }
