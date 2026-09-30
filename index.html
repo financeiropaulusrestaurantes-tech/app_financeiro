@@ -173,12 +173,6 @@ function ordenarPor(lista, state, extractors){
   return copia;
 }
 
-/* ---- Pago em atraso (linha em azul) ---- */
-function pagoAtrasadoRowStyle(l, dataVencimento, dataPagamento){
-  return (l.status==="realizado" && dataVencimento && dataPagamento && dataPagamento > dataVencimento)
-    ? `background:${INFO_BG};` : "";
-}
-
 /* ---- Seleção em massa (checkbox por linha + "marcar todos") ---- */
 function thCheckAll(){
   return `<th style="width:30px;"><input type="checkbox" class="th-check-all" title="Selecionar todos" style="width:15px;height:15px;cursor:pointer;" /></th>`;
@@ -364,6 +358,25 @@ async function sbFetch(path, {method="GET", body, retry=true}={}){
   return data;
 }
 
+// Busca TODAS as linhas de uma tabela, paginando por "offset" até vir uma
+// página vazia. Isso evita que um limite de linhas por requisição configurado
+// no Supabase (Project Settings → API → Max Rows) corte a lista pela metade —
+// cada página traz o que o servidor permitir, e a busca continua até acabar.
+async function sbFetchAll(path){
+  const PEDIDO = 1000; // quanto pedimos por página; se o servidor tiver um
+  // limite menor (Max Rows), ele devolve menos — por isso não paramos ao
+  // receber menos que PEDIDO, e sim quando uma página vier vazia.
+  let offset = 0, all = [], guard = 0;
+  while(guard++ < 500){ // trava de segurança (até 500 páginas) contra loop infinito
+    const sep = path.includes("?") ? "&" : "?";
+    const pagina = await sbFetch(`${path}${sep}limit=${PEDIDO}&offset=${offset}`);
+    if(!pagina || pagina.length===0) break;
+    all = all.concat(pagina);
+    offset += pagina.length;
+  }
+  return all;
+}
+
 /* ============================== Estado global ============================== */
 const STATE = { loading:true, session:null, currentUser:null, users:[], lancamentos:[], cartaoLancamentos:[], valeLancamentos:[], faturamentoLancamentos:[], categorias:[], cartoes:[], fornecedores:[], view:"dashboard", navOpen:{} };
 const CHARTS = {};
@@ -402,14 +415,14 @@ function ajustarViewInicial(){
   }
   STATE.view = "sem-acesso";
 }
-async function reloadLancamentos(){ STATE.lancamentos = await sbFetch(`/rest/v1/lancamentos?select=*&order=criado_em.desc`); }
-async function reloadCartaoLancamentos(){ STATE.cartaoLancamentos = await sbFetch(`/rest/v1/cartao_lancamentos?select=*&order=data.desc`); }
-async function reloadValeLancamentos(){ STATE.valeLancamentos = await sbFetch(`/rest/v1/vale_lancamentos?select=*&order=data.desc`); }
-async function reloadFaturamentoLancamentos(){ STATE.faturamentoLancamentos = await sbFetch(`/rest/v1/faturamento_lancamentos?select=*&order=criado_em.desc`); }
-async function reloadCategorias(){ STATE.categorias = await sbFetch(`/rest/v1/categorias?select=*&order=nome.asc`); }
-async function reloadCartoes(){ STATE.cartoes = await sbFetch(`/rest/v1/cartoes?select=*&order=nome.asc`); }
-async function reloadFornecedores(){ STATE.fornecedores = await sbFetch(`/rest/v1/fornecedores?select=*&order=nome.asc`); }
-async function reloadUsers(){ STATE.users = await sbFetch(`/rest/v1/profiles?select=*&order=nome.asc`); }
+async function reloadLancamentos(){ STATE.lancamentos = await sbFetchAll(`/rest/v1/lancamentos?select=*&order=criado_em.desc`); }
+async function reloadCartaoLancamentos(){ STATE.cartaoLancamentos = await sbFetchAll(`/rest/v1/cartao_lancamentos?select=*&order=data.desc`); }
+async function reloadValeLancamentos(){ STATE.valeLancamentos = await sbFetchAll(`/rest/v1/vale_lancamentos?select=*&order=data.desc`); }
+async function reloadFaturamentoLancamentos(){ STATE.faturamentoLancamentos = await sbFetchAll(`/rest/v1/faturamento_lancamentos?select=*&order=criado_em.desc`); }
+async function reloadCategorias(){ STATE.categorias = await sbFetchAll(`/rest/v1/categorias?select=*&order=nome.asc`); }
+async function reloadCartoes(){ STATE.cartoes = await sbFetchAll(`/rest/v1/cartoes?select=*&order=nome.asc`); }
+async function reloadFornecedores(){ STATE.fornecedores = await sbFetchAll(`/rest/v1/fornecedores?select=*&order=nome.asc`); }
+async function reloadUsers(){ STATE.users = await sbFetchAll(`/rest/v1/profiles?select=*&order=nome.asc`); }
 
 async function addCategoria(tipo, nome){
   const [nova] = await sbFetch(`/rest/v1/categorias`, { method:"POST", body:{ tipo, nome } });
@@ -540,8 +553,12 @@ async function deleteFatLancamento(id){
 async function quitarFatConta(id){ await editFatLancamento(id, { status:"realizado", data_realizada: todayISO() }); }
 async function addFatLancamentosEmLote(rows){
   const payload = rows.map(r=>({ ...r, usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome }));
-  const criados = await sbFetch(`/rest/v1/faturamento_lancamentos`, { method:"POST", body: payload });
-  STATE.faturamentoLancamentos = [...criados, ...STATE.faturamentoLancamentos];
+  await sbFetch(`/rest/v1/faturamento_lancamentos`, { method:"POST", body: payload });
+  // Recarrega do banco em vez de usar a resposta do POST: se o Supabase tiver
+  // um limite de linhas por requisição (Project Settings → API → Max Rows),
+  // a resposta do lote poderia vir cortada mesmo com todas as linhas já
+  // gravadas — recarregar garante que a lista local bata com o banco.
+  await reloadFaturamentoLancamentos();
 }
 
 /* ---- Gerenciar categorias ---- */
@@ -1036,7 +1053,7 @@ function prazoBadge(l){
   }
   const atrasado = l.data_vencimento < todayISO();
   return atrasado
-    ? `<span class="badge" style="background:${DANGER_BG};color:${DANGER};"><span class="dot" style="background:${DANGER}"></span>Atrasado</span>`
+    ? `<span class="badge" style="background:${INFO_BG};color:${INFO};"><span class="dot" style="background:${INFO}"></span>Atrasado</span>`
     : `<span class="badge badge-pending"><span class="dot" style="background:#c9922c"></span>No prazo</span>`;
 }
 
@@ -1202,7 +1219,7 @@ function renderLancamentosView(container, tipo){
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr style="${pagoAtrasadoRowStyle(l, l.data_prevista, l.data_realizada)}">
+              <tr>
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
@@ -1711,7 +1728,7 @@ function renderCartoesLancamentos(container){
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr style="${pagoAtrasadoRowStyle(l, l.data, l.data_pagamento)}">
+              <tr>
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${cartaoBadge(l.status)}</td>
@@ -1991,7 +2008,7 @@ function renderValesLancamentos(container){
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr style="${pagoAtrasadoRowStyle(l, l.data, l.data_pagamento)}">
+              <tr>
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${valeBadge(l.status)}</td>
@@ -2309,7 +2326,7 @@ function renderFatLancamentosView(container, tipo){
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr class="fat-row" data-id="${l.id}" style="cursor:pointer;${pagoAtrasadoRowStyle(l, l.data_prevista, l.data_realizada)}">
+              <tr class="fat-row" data-id="${l.id}" style="cursor:pointer;">
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
@@ -2841,7 +2858,7 @@ function renderFatDuplicatas(container){
           <tbody>
             ${duplicatasOrdenadas.map(l=>{
               const atrasado = l.status==="previsto" && l.data_prevista < hoje;
-              return `<tr class="fat-row" data-id="${l.id}" style="cursor:pointer;${pagoAtrasadoRowStyle(l, l.data_prevista, l.data_realizada)}">
+              return `<tr class="fat-row" data-id="${l.id}" style="cursor:pointer;">
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;${atrasado?`color:${DANGER};font-weight:600;`:""}">${fmtDate(l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
