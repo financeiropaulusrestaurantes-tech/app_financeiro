@@ -271,6 +271,7 @@ function icon(name, size=16, color="currentColor", sw=2){
     card:'<rect x="2" y="5" width="20" height="14" rx="2.5"/><line x1="2" y1="10" x2="22" y2="10"/><line x1="6" y1="15" x2="10" y2="15"/>',
     folder:'<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
     download:'<path d="M12 3v12"/><polyline points="7 11 12 16 17 11"/><path d="M5 20h14"/>',
+    bank:'<path d="M3 10l9-6 9 6"/><path d="M4 10v9"/><path d="M8 10v9"/><path d="M12 10v9"/><path d="M16 10v9"/><path d="M20 10v9"/><path d="M2 21h20"/>',
   };
   return `<svg width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="${color}" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round">${P[name]||""}</svg>`;
 }
@@ -404,7 +405,7 @@ async function sbFetchAll(path){
 }
 
 /* ============================== Estado global ============================== */
-const STATE = { loading:true, session:null, currentUser:null, users:[], lancamentos:[], cartaoLancamentos:[], valeLancamentos:[], faturamentoLancamentos:[], categorias:[], cartoes:[], fornecedores:[], clientes:[], view:"fin-dashboard", navOpen:{}, contaTab:{} };
+const STATE = { loading:true, session:null, currentUser:null, users:[], lancamentos:[], cartaoLancamentos:[], valeLancamentos:[], faturamentoLancamentos:[], categorias:[], cartoes:[], fornecedores:[], clientes:[], contasBancarias:[], view:"fin-dashboard", navOpen:{}, contaTab:{} };
 const CHARTS = {};
 
 async function bootstrap(){
@@ -429,7 +430,7 @@ async function loadProfileAndData(){
   const profile = profiles && profiles[0];
   if(!profile) throw new Error("Perfil não encontrado.");
   STATE.currentUser = { id: STATE.session.user.id, email: STATE.session.user.email, nome: profile.nome, cargo: profile.cargo, permissoes: profile.permissoes || [] };
-  await Promise.all([reloadLancamentos(), reloadCartaoLancamentos(), reloadValeLancamentos(), reloadFaturamentoLancamentos(), reloadCategorias(), reloadCartoes(), reloadFornecedores(), reloadClientes(), isAdminLevel(STATE.currentUser) ? reloadUsers() : Promise.resolve()]);
+  await Promise.all([reloadLancamentos(), reloadCartaoLancamentos(), reloadValeLancamentos(), reloadFaturamentoLancamentos(), reloadCategorias(), reloadCartoes(), reloadFornecedores(), reloadClientes(), reloadContasBancarias(), isAdminLevel(STATE.currentUser) ? reloadUsers() : Promise.resolve()]);
   ajustarViewInicial();
 }
 function ajustarViewInicial(){
@@ -450,6 +451,7 @@ async function reloadCartoes(){ STATE.cartoes = await sbFetchAll(`/rest/v1/carto
 async function reloadFornecedores(){ STATE.fornecedores = await sbFetchAll(`/rest/v1/fornecedores?select=*&order=nome.asc`); }
 async function reloadClientes(){ STATE.clientes = await sbFetchAll(`/rest/v1/clientes?select=*&order=nome.asc`); }
 async function reloadUsers(){ STATE.users = await sbFetchAll(`/rest/v1/profiles?select=*&order=nome.asc`); }
+async function reloadContasBancarias(){ STATE.contasBancarias = await sbFetchAll(`/rest/v1/contas_bancarias?select=*&order=nome.asc`); }
 
 async function addCategoria(tipo, nome){
   const [nova] = await sbFetch(`/rest/v1/categorias`, { method:"POST", body:{ tipo, nome } });
@@ -478,6 +480,30 @@ async function editCartao(id, nome, ultimosDigitos){
 async function deleteCartao(id){
   await sbFetch(`/rest/v1/cartoes?id=eq.${id}`, { method:"DELETE" });
   STATE.cartoes = STATE.cartoes.filter(c=>c.id!==id);
+}
+
+/* ---- Contas bancárias (saldo de caixa da empresa) ---- */
+function saldoTotalContas(){
+  return (STATE.contasBancarias||[]).reduce((s,c)=> s + (Number(c.saldo)||0), 0);
+}
+async function addContaBancaria(data){
+  const payload = { ...data, usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome };
+  const [nova] = await sbFetch(`/rest/v1/contas_bancarias`, { method:"POST", body:payload });
+  STATE.contasBancarias = [...STATE.contasBancarias, nova].sort((a,b)=>(a.nome||"").localeCompare(b.nome||""));
+  return nova;
+}
+async function editContaBancaria(id, data){
+  const [atualizada] = await sbFetch(`/rest/v1/contas_bancarias?id=eq.${id}`, { method:"PATCH", body:data });
+  STATE.contasBancarias = STATE.contasBancarias.map(c=> c.id===id ? atualizada : c).sort((a,b)=>(a.nome||"").localeCompare(b.nome||""));
+  return atualizada;
+}
+async function deleteContaBancaria(id){
+  await sbFetch(`/rest/v1/contas_bancarias?id=eq.${id}`, { method:"DELETE" });
+  STATE.contasBancarias = STATE.contasBancarias.filter(c=>c.id!==id);
+}
+function saldoContasInlineHTML(){
+  const total = saldoTotalContas();
+  return ` <span class="muted">· Saldo em contas bancárias: <b style="color:${total>=0?BRAND[600]:DANGER};">${currency(total)}</b></span>`;
 }
 
 /* ---- Consulta pública de CNPJ (BrasilAPI) — usada nos cadastros de
@@ -974,6 +1000,7 @@ const NAV_GROUPS = [
   { id:"config", label:"Configurações", ic:"settings", items:[
     {id:"seguranca", label:"Segurança", ic:"lock"},
     {id:"usuarios", label:"Usuários", ic:"users"},
+    {id:"contas-bancarias", label:"Contas Bancárias", ic:"bank"},
   ]},
 ];
 // Cada tela unificada do módulo Financeiro (Painel Principal, Entradas, Saídas,
@@ -1025,6 +1052,11 @@ const PERMISSOES_GRUPOS = [
       {id:"cad-cartoes", label:"Cartões"},
       {id:"cad-fornecedores", label:"Fornecedores"},
       {id:"cad-clientes", label:"Clientes"},
+    ]},
+  ]},
+  { id:"config", label:"Configurações", ic:"settings", subgrupos:[
+    { label:"Configurações", items:[
+      {id:"contas-bancarias", label:"Contas Bancárias"},
     ]},
   ]},
 ];
@@ -1221,6 +1253,7 @@ function renderView(){
   else if(STATE.view==="cad-clientes") renderCadClientes(c);
   else if(STATE.view==="seguranca") renderSeguranca(c);
   else if(STATE.view==="usuarios") renderUsuarios(c);
+  else if(STATE.view==="contas-bancarias") renderContasBancarias(c);
   else renderSemAcesso(c);
 }
 
@@ -1469,7 +1502,7 @@ function renderLancamentosView(container, tipo){
     Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
-    document.getElementById("lanc-summary").innerHTML = `${dados.length} lançamento(s) · Total realizado: <b style="color:${isEntrada?BRAND[600]:DANGER};">${currency(total)}</b>`;
+    document.getElementById("lanc-summary").innerHTML = `${dados.length} lançamento(s) · Total realizado: <b style="color:${isEntrada?BRAND[600]:DANGER};">${currency(total)}</b>${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("lanc-results");
     rows.innerHTML = `
@@ -2033,7 +2066,7 @@ function renderCartoesLancamentos(container){
     Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
-    document.getElementById("cartao-summary").innerHTML = `${dados.length} lançamento(s) · Total pago: <b style="color:${DANGER};">${currency(total)}</b>`;
+    document.getElementById("cartao-summary").innerHTML = `${dados.length} lançamento(s) · Total pago: <b style="color:${DANGER};">${currency(total)}</b>${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("cartao-results");
     rows.innerHTML = `
@@ -2363,7 +2396,7 @@ function renderValesLancamentos(container){
     Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
-    document.getElementById("vale-summary").innerHTML = `${dados.length} vale(s) · Total recebido: <b style="color:${BRAND[600]};">${currency(total)}</b>`;
+    document.getElementById("vale-summary").innerHTML = `${dados.length} vale(s) · Total recebido: <b style="color:${BRAND[600]};">${currency(total)}</b>${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("vale-results");
     rows.innerHTML = `
@@ -2686,7 +2719,7 @@ function renderFatLancamentosView(container, tipo){
     const totalRealizado = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
     const totalPrevisto = dados.reduce((s,l)=> s + (l.status==="previsto"?l.valor:0), 0);
     const corPrincipal = isEntrada?BRAND[600]:DANGER;
-    document.getElementById("fat-lanc-summary").innerHTML = `${dados.length} lançamento(s) selecionado(s) · Soma do filtro: <b style="color:${corPrincipal};">${currency(totalFiltrado)}</b> <span class="muted">(Realizado: ${currency(totalRealizado)} · Previsto: ${currency(totalPrevisto)})</span>`;
+    document.getElementById("fat-lanc-summary").innerHTML = `${dados.length} lançamento(s) selecionado(s) · Soma do filtro: <b style="color:${corPrincipal};">${currency(totalFiltrado)}</b> <span class="muted">(Realizado: ${currency(totalRealizado)} · Previsto: ${currency(totalPrevisto)})</span>${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("fat-lanc-results");
     rows.innerHTML = `
@@ -4099,6 +4132,119 @@ function renderUsuarios(container){
     wireTopScroll(container);
   }
   build();
+}
+
+/* ============================== Contas Bancárias ============================== */
+function contaBancariaFormHTML(item){
+  return `
+    <form id="cb-form">
+      <label class="field"><span class="field-label">Nome da conta</span>
+        <input class="input" id="cb-nome" placeholder="ex: Conta Principal" value="${esc(item?item.nome:"")}" /></label>
+      <label class="field"><span class="field-label">Banco</span>
+        <input class="input" id="cb-banco" placeholder="ex: Banco do Brasil, Itaú, Nubank..." value="${esc(item?item.banco:"")}" /></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <label class="field"><span class="field-label">Responsável</span>
+          <input class="input" id="cb-responsavel" placeholder="Quem administra a conta" value="${esc(item?item.responsavel:"")}" /></label>
+        <label class="field"><span class="field-label">Número da conta</span>
+          <input class="input" id="cb-numero" placeholder="Agência / conta" value="${esc(item?item.numero_conta:"")}" /></label>
+      </div>
+      <label class="field"><span class="field-label">Saldo atual (R$)</span>
+        <input class="input" type="number" step="0.01" id="cb-saldo" placeholder="0,00" value="${item&&item.saldo!=null?item.saldo:""}" /></label>
+      <p class="field-hint">Nenhum campo é obrigatório — preencha o que tiver disponível agora e complete depois.</p>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="cb-cancel">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="cb-submit">${icon("check",15)} Salvar conta</button>
+      </div>
+    </form>`;
+}
+function openContaBancariaModal(item, onSaved){
+  openModal({
+    title: item ? "Editar conta bancária" : "Nova conta bancária",
+    bodyHTML: contaBancariaFormHTML(item),
+    mount:(body)=>{
+      body.querySelector("#cb-cancel").addEventListener("click", closeModal);
+      body.querySelector("#cb-form").addEventListener("submit", async (e)=>{
+        e.preventDefault();
+        const payload = {
+          nome: body.querySelector("#cb-nome").value.trim() || null,
+          banco: body.querySelector("#cb-banco").value.trim() || null,
+          responsavel: body.querySelector("#cb-responsavel").value.trim() || null,
+          numero_conta: body.querySelector("#cb-numero").value.trim() || null,
+          saldo: body.querySelector("#cb-saldo").value==="" ? 0 : parseFloat(body.querySelector("#cb-saldo").value) || 0,
+        };
+        const btn = body.querySelector("#cb-submit");
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+        try{
+          if(item) await editContaBancaria(item.id, payload);
+          else await addContaBancaria(payload);
+          closeModal(); onSaved && onSaved();
+        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar conta`; }
+      });
+    }
+  });
+}
+function contaBancariaCardHTML(c){
+  const saldo = Number(c.saldo)||0;
+  return `
+    <div class="card conta-bancaria-card" data-id="${c.id}" style="padding:16px;display:flex;flex-direction:column;gap:10px;cursor:pointer;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:8px;">
+        <div style="min-width:0;">
+          <p style="margin:0;font-weight:600;color:${BRAND[800]};font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${esc(c.nome||"Conta sem nome")}</p>
+          <p style="margin:2px 0 0;font-size:12px;color:#a8a29e;">${esc(c.banco||"Banco não informado")}</p>
+        </div>
+        <div style="display:flex;gap:2px;flex-shrink:0;">
+          <button class="icon-btn edit-contabanc-btn" data-id="${c.id}">${icon("edit",15,"#78716c")}</button>
+          <button class="icon-btn danger del-contabanc-btn" data-id="${c.id}">${icon("trash",15,DANGER)}</button>
+        </div>
+      </div>
+      <p style="margin:0;font-size:22px;font-weight:700;color:${saldo>=0?BRAND[600]:DANGER};">${currency(saldo)}</p>
+      <div style="border-top:1px solid var(--border);padding-top:8px;display:flex;flex-direction:column;gap:2px;">
+        <p style="margin:0;font-size:12px;color:#78716c;">${esc(c.responsavel||"Responsável não informado")}</p>
+        <p style="margin:0;font-size:12px;color:#a8a29e;">${c.numero_conta?`Conta ${esc(c.numero_conta)}`:"Número não informado"}</p>
+      </div>
+    </div>`;
+}
+function renderContasBancarias(container){
+  function refresh(){
+    const contas = STATE.contasBancarias;
+    const total = saldoTotalContas();
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+        <div>
+          <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Contas Bancárias</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;">Saldo das contas bancárias da empresa, usado como referência de caixa disponível.</p>
+        </div>
+        <button class="btn btn-primary" id="btn-nova-conta-bancaria">${icon("plus",16)} Adicionar conta</button>
+      </div>
+      ${contas.length ? `
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px;margin-bottom:18px;">
+        ${contas.map(contaBancariaCardHTML).join("")}
+      </div>
+      <div class="card" style="padding:16px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;">
+        <span style="font-size:14px;color:#57534e;font-weight:500;">Total em contas bancárias (${contas.length} conta${contas.length>1?"s":""})</span>
+        <span style="font-size:22px;font-weight:700;color:${total>=0?BRAND[600]:DANGER};">${currency(total)}</span>
+      </div>` : `<div class="card empty" style="border-style:dashed;padding:60px 10px;">Nenhuma conta bancária cadastrada ainda. Clique em "Adicionar conta" para começar.</div>`}`;
+
+    container.querySelector("#btn-nova-conta-bancaria").addEventListener("click", ()=> openContaBancariaModal(null, refresh));
+    container.querySelectorAll(".edit-contabanc-btn").forEach(b=> b.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      const item = STATE.contasBancarias.find(c=>c.id===b.dataset.id);
+      openContaBancariaModal(item, refresh);
+    }));
+    container.querySelectorAll(".del-contabanc-btn").forEach(b=> b.addEventListener("click", (e)=>{
+      e.stopPropagation();
+      const item = STATE.contasBancarias.find(c=>c.id===b.dataset.id);
+      openConfirm(`Excluir a conta "${item.nome||item.banco||"sem nome"}"? Essa ação não pode ser desfeita.`, async ()=>{
+        try{ await deleteContaBancaria(item.id); refresh(); }catch(err){ toast(err.message, true); }
+      });
+    }));
+    container.querySelectorAll(".conta-bancaria-card").forEach(card=> card.addEventListener("click", (e)=>{
+      if(e.target.closest(".icon-btn")) return;
+      const item = STATE.contasBancarias.find(c=>c.id===card.dataset.id);
+      if(item) openContaBancariaModal(item, refresh);
+    }));
+  }
+  refresh();
 }
 
 /* ============================== Boot ============================== */
