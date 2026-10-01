@@ -99,6 +99,11 @@
   .filter-bar{background:#fff; border:1px solid var(--border); border-radius:16px; padding:14px; margin-bottom:16px; display:grid; grid-template-columns:1fr; gap:10px;}
   @media(min-width:900px){ .filter-bar{grid-template-columns:1.6fr .8fr .8fr 1fr 1fr .8fr;} }
 
+  .conta-tabs{display:flex; gap:6px; margin-bottom:18px; overflow-x:auto; padding-bottom:2px;}
+  .conta-tab{flex-shrink:0; padding:8px 18px; border-radius:999px; border:1px solid var(--border); background:#fff; font-size:13px; font-weight:600; color:var(--muted); cursor:pointer; white-space:nowrap; transition:background .12s,color .12s,border-color .12s;}
+  .conta-tab:hover{border-color:var(--b400); color:var(--b700);}
+  .conta-tab.active{background:var(--b600); border-color:var(--b600); color:#fff;}
+
   .login-wrap{min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--b50);}
   .login-box{width:100%; max-width:360px;}
 
@@ -399,7 +404,7 @@ async function sbFetchAll(path){
 }
 
 /* ============================== Estado global ============================== */
-const STATE = { loading:true, session:null, currentUser:null, users:[], lancamentos:[], cartaoLancamentos:[], valeLancamentos:[], faturamentoLancamentos:[], categorias:[], cartoes:[], fornecedores:[], view:"dashboard", navOpen:{} };
+const STATE = { loading:true, session:null, currentUser:null, users:[], lancamentos:[], cartaoLancamentos:[], valeLancamentos:[], faturamentoLancamentos:[], categorias:[], cartoes:[], fornecedores:[], clientes:[], view:"fin-dashboard", navOpen:{}, contaTab:{} };
 const CHARTS = {};
 
 async function bootstrap(){
@@ -424,7 +429,7 @@ async function loadProfileAndData(){
   const profile = profiles && profiles[0];
   if(!profile) throw new Error("Perfil não encontrado.");
   STATE.currentUser = { id: STATE.session.user.id, email: STATE.session.user.email, nome: profile.nome, cargo: profile.cargo, permissoes: profile.permissoes || [] };
-  await Promise.all([reloadLancamentos(), reloadCartaoLancamentos(), reloadValeLancamentos(), reloadFaturamentoLancamentos(), reloadCategorias(), reloadCartoes(), reloadFornecedores(), isAdminLevel(STATE.currentUser) ? reloadUsers() : Promise.resolve()]);
+  await Promise.all([reloadLancamentos(), reloadCartaoLancamentos(), reloadValeLancamentos(), reloadFaturamentoLancamentos(), reloadCategorias(), reloadCartoes(), reloadFornecedores(), reloadClientes(), isAdminLevel(STATE.currentUser) ? reloadUsers() : Promise.resolve()]);
   ajustarViewInicial();
 }
 function ajustarViewInicial(){
@@ -443,6 +448,7 @@ async function reloadFaturamentoLancamentos(){ STATE.faturamentoLancamentos = aw
 async function reloadCategorias(){ STATE.categorias = await sbFetchAll(`/rest/v1/categorias?select=*&order=nome.asc`); }
 async function reloadCartoes(){ STATE.cartoes = await sbFetchAll(`/rest/v1/cartoes?select=*&order=nome.asc`); }
 async function reloadFornecedores(){ STATE.fornecedores = await sbFetchAll(`/rest/v1/fornecedores?select=*&order=nome.asc`); }
+async function reloadClientes(){ STATE.clientes = await sbFetchAll(`/rest/v1/clientes?select=*&order=nome.asc`); }
 async function reloadUsers(){ STATE.users = await sbFetchAll(`/rest/v1/profiles?select=*&order=nome.asc`); }
 
 async function addCategoria(tipo, nome){
@@ -474,6 +480,69 @@ async function deleteCartao(id){
   STATE.cartoes = STATE.cartoes.filter(c=>c.id!==id);
 }
 
+/* ---- Consulta pública de CNPJ (BrasilAPI) — usada nos cadastros de
+   Fornecedores e Clientes para preencher nome/telefone/endereço automaticamente ---- */
+function formatarCNPJ(valor){
+  const d = String(valor||"").replace(/\D/g,"");
+  if(d.length!==14) return valor;
+  return `${d.slice(0,2)}.${d.slice(2,5)}.${d.slice(5,8)}/${d.slice(8,12)}-${d.slice(12)}`;
+}
+function formatarTelefoneConsulta(raw){
+  const d = String(raw||"").replace(/\D/g,"");
+  if(d.length<10) return "";
+  const ddd = d.slice(0,2), numero = d.slice(2);
+  return numero.length>=9 ? `(${ddd}) ${numero.slice(0,5)}-${numero.slice(5)}` : `(${ddd}) ${numero.slice(0,4)}-${numero.slice(4)}`;
+}
+function enderecoConsultaCNPJ(d){
+  return [
+    [d.logradouro, d.numero].filter(Boolean).join(", "),
+    d.bairro,
+    (d.municipio && d.uf) ? `${d.municipio}/${d.uf}` : (d.municipio || d.uf || ""),
+    d.cep ? `CEP ${d.cep}` : "",
+  ].filter(Boolean).join(" - ");
+}
+async function consultarCNPJ(cnpjRaw){
+  const cnpj = String(cnpjRaw||"").replace(/\D/g,"");
+  if(cnpj.length!==14) throw new Error("Informe um CNPJ válido (14 dígitos) — CPF não pode ser consultado.");
+  let res;
+  try{ res = await fetch(`https://brasilapi.com.br/api/cnpj/v1/${cnpj}`); }
+  catch(e){ throw new Error("Não foi possível acessar o serviço de consulta agora. Verifique sua conexão."); }
+  if(res.status===404) throw new Error("CNPJ não encontrado na Receita Federal.");
+  if(!res.ok) throw new Error("Não foi possível consultar esse CNPJ agora. Tente novamente em instantes.");
+  return res.json();
+}
+// Liga o botão "Consultar" de um formulário de cadastro (Fornecedor/Cliente) ao
+// preenchimento automático de nome, telefone e endereço a partir do CNPJ.
+function wireConsultaCNPJ(body, ids){
+  const btn = body.querySelector(ids.btn);
+  const docInput = body.querySelector(ids.documento);
+  if(!btn || !docInput) return;
+  btn.addEventListener("click", async ()=>{
+    const original = btn.innerHTML;
+    btn.disabled = true; btn.innerHTML = `<span class="spinner"></span>`;
+    try{
+      const dados = await consultarCNPJ(docInput.value);
+      docInput.value = formatarCNPJ(dados.cnpj || docInput.value);
+      const nomeInput = body.querySelector(ids.nome);
+      if(nomeInput) nomeInput.value = dados.nome_fantasia || dados.razao_social || nomeInput.value;
+      const telInput = body.querySelector(ids.telefone);
+      if(telInput && !telInput.value.trim()){
+        const tel = formatarTelefoneConsulta(dados.ddd_telefone_1);
+        if(tel) telInput.value = tel;
+      }
+      const obsInput = body.querySelector(ids.observacoes);
+      if(obsInput && !obsInput.value.trim()){
+        const endereco = enderecoConsultaCNPJ(dados);
+        if(endereco) obsInput.value = endereco;
+      }
+      const situacao = dados.descricao_situacao_cadastral;
+      const aviso = situacao && situacao.toUpperCase()!=="ATIVA" ? ` · Atenção: situação cadastral "${situacao}"` : "";
+      toast(`Dados do CNPJ preenchidos${aviso}.`, !!aviso);
+    }catch(err){ toast(err.message, true); }
+    finally{ btn.disabled=false; btn.innerHTML = original; }
+  });
+}
+
 /* ---- Cadastro de fornecedores ---- */
 async function addFornecedor(data){
   const payload = { ...data, usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome };
@@ -501,6 +570,35 @@ async function editFornecedor(id, data){
 async function deleteFornecedor(id){
   await sbFetch(`/rest/v1/fornecedores?id=eq.${id}`, { method:"DELETE" });
   STATE.fornecedores = STATE.fornecedores.filter(f=>f.id!==id);
+}
+
+/* ---- Cadastro de clientes ---- */
+async function addCliente(data){
+  const payload = { ...data, usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome };
+  const [novo] = await sbFetch(`/rest/v1/clientes`, { method:"POST", body:payload });
+  STATE.clientes = [...STATE.clientes, novo].sort((a,b)=>a.nome.localeCompare(b.nome));
+  return novo;
+}
+async function garantirCliente(nome, documento){
+  const alvo = String(nome||"").trim().toLowerCase();
+  if(!alvo) return false;
+  const existe = STATE.clientes.some(c=>c.nome.trim().toLowerCase()===alvo);
+  if(existe) return false;
+  await addCliente({
+    nome: String(nome).trim(), telefone:null, email:null, documento: documento||null,
+    categoria_padrao:null, unidade_padrao:null,
+    observacoes:"Cadastrado automaticamente ao importar planilha de títulos.",
+  });
+  return true;
+}
+async function editCliente(id, data){
+  const [atualizado] = await sbFetch(`/rest/v1/clientes?id=eq.${id}`, { method:"PATCH", body:data });
+  STATE.clientes = STATE.clientes.map(c=> c.id===id ? atualizado : c).sort((a,b)=>a.nome.localeCompare(b.nome));
+  return atualizado;
+}
+async function deleteCliente(id){
+  await sbFetch(`/rest/v1/clientes?id=eq.${id}`, { method:"DELETE" });
+  STATE.clientes = STATE.clientes.filter(c=>c.id!==id);
 }
 
 async function addLancamento(data){
@@ -860,38 +958,77 @@ function renderLoginMfaStep(root, session, factorId){
 }
 
 const NAV_GROUPS = [
-  { id:"carteira", label:"Carteira", ic:"clipboard", items:[
-    {id:"dashboard", label:"Dashboard", ic:"grid"},
-    {id:"entradas", label:"Entradas", ic:"down"},
-    {id:"saidas", label:"Saídas", ic:"up"},
-    {id:"contas", label:"Contas a Pagar/Receber", ic:"clipboard"},
-    {id:"personalizado", label:"Análise Personalizada", ic:"sparkles"},
-  ]},
-  { id:"cartoes", label:"Cartões e Débitos", ic:"card", items:[
-    {id:"cartoes-dashboard", label:"Dashboard", ic:"grid"},
-    {id:"cartoes-lancamentos", label:"Gastos do Cartão", ic:"card"},
-  ]},
-  { id:"vales", label:"Vales", ic:"folder", items:[
-    {id:"vales-dashboard", label:"Dashboard", ic:"grid"},
-    {id:"vales-lancamentos", label:"Recebimentos", ic:"down"},
-  ]},
-  { id:"faturamento", label:"Faturamentos", ic:"sparkles", items:[
-    {id:"fat-dashboard", label:"Dashboard", ic:"grid"},
-    {id:"fat-entradas", label:"Entradas", ic:"down"},
-    {id:"fat-saidas", label:"Saídas", ic:"up"},
-    {id:"fat-contas", label:"Contas a Pagar/Receber", ic:"clipboard"},
+  { id:"financeiro", label:"Financeiro", ic:"clipboard", items:[
+    {id:"fin-dashboard", label:"Painel Principal", ic:"grid"},
+    {id:"fin-entradas", label:"Entradas", ic:"down"},
+    {id:"fin-saidas", label:"Saídas", ic:"up"},
+    {id:"fin-contas", label:"Contas a Pagar/Receber", ic:"clipboard"},
     {id:"fat-duplicatas", label:"Duplicatas a Pagar", ic:"card"},
-    {id:"fat-personalizado", label:"Análise Personalizada", ic:"sparkles"},
+    {id:"fin-personalizado", label:"Análise Personalizada", ic:"sparkles"},
   ]},
   { id:"cadastros", label:"Cadastros", ic:"folder", items:[
     {id:"cad-cartoes", label:"Cartões", ic:"card"},
     {id:"cad-fornecedores", label:"Fornecedores", ic:"users"},
+    {id:"cad-clientes", label:"Clientes", ic:"users"},
   ]},
   { id:"config", label:"Configurações", ic:"settings", items:[
     {id:"seguranca", label:"Segurança", ic:"lock"},
     {id:"usuarios", label:"Usuários", ic:"users"},
   ]},
 ];
+// Cada tela unificada do módulo Financeiro (Painel Principal, Entradas, Saídas,
+// Contas e Análise Personalizada) reúne várias "contas" por trás de um menu
+// deslizante. O acesso de cada aba continua checado pelo id granular de sempre
+// (ex: "fat-entradas"), então as permissões de cada usuário não mudam.
+const FIN_SUBACESSOS = {
+  "fin-dashboard": ["dashboard","cartoes-dashboard","vales-dashboard","fat-dashboard"],
+  "fin-entradas": ["entradas","vales-lancamentos","fat-entradas"],
+  "fin-saidas": ["saidas","cartoes-lancamentos","fat-saidas"],
+  "fin-contas": ["contas","fat-contas"],
+  "fin-personalizado": ["personalizado","fat-personalizado"],
+};
+// Estrutura granular usada só no editor de permissões e nos resumos de acesso
+// (a navegação lateral agora é mais enxuta, mas quem libera o quê pra cada
+// usuário continua escolhendo conta por conta, tela por tela).
+const PERMISSOES_GRUPOS = [
+  { id:"financeiro", label:"Financeiro", ic:"clipboard", subgrupos:[
+    { label:"Painel Principal", items:[
+      {id:"dashboard", label:"Carteira"},
+      {id:"cartoes-dashboard", label:"Cartões"},
+      {id:"vales-dashboard", label:"Vales"},
+      {id:"fat-dashboard", label:"Faturamento"},
+    ]},
+    { label:"Entradas", items:[
+      {id:"entradas", label:"Carteira"},
+      {id:"vales-lancamentos", label:"Vales"},
+      {id:"fat-entradas", label:"Faturamento"},
+    ]},
+    { label:"Saídas", items:[
+      {id:"saidas", label:"Carteira"},
+      {id:"cartoes-lancamentos", label:"Cartões"},
+      {id:"fat-saidas", label:"Faturamento"},
+    ]},
+    { label:"Contas a Pagar/Receber", items:[
+      {id:"contas", label:"Carteira"},
+      {id:"fat-contas", label:"Faturamento"},
+    ]},
+    { label:"Duplicatas a Pagar", items:[
+      {id:"fat-duplicatas", label:"Faturamento"},
+    ]},
+    { label:"Análise Personalizada", items:[
+      {id:"personalizado", label:"Carteira"},
+      {id:"fat-personalizado", label:"Faturamento"},
+    ]},
+  ]},
+  { id:"cadastros", label:"Cadastros", ic:"folder", subgrupos:[
+    { label:"Cadastros", items:[
+      {id:"cad-cartoes", label:"Cartões"},
+      {id:"cad-fornecedores", label:"Fornecedores"},
+      {id:"cad-clientes", label:"Clientes"},
+    ]},
+  ]},
+];
+function permItemsFlat(grupo){ return grupo.subgrupos.flatMap(sg=>sg.items); }
 
 /* ============================== Perfis de acesso e permissões por aba/subaba ============================== */
 const CARGO_LABEL = { usuario:"Usuário", admin:"Admin", super_admin:"Super Admin" };
@@ -901,6 +1038,12 @@ function temAcessoView(user, viewId){
   if(viewId==="seguranca") return true; // toda conta autenticada gerencia a própria segurança
   if(viewId==="usuarios") return isAdminLevel(user); // gestão de usuários é exclusiva de Admin/Super Admin
   if(isAdminLevel(user)) return true;
+  if(FIN_SUBACESSOS[viewId]){
+    // Tela unificada (Painel Principal/Entradas/Saídas/Contas/Análise
+    // Personalizada): visível se o usuário tiver acesso a pelo menos uma
+    // das contas por trás do menu deslizante.
+    return FIN_SUBACESSOS[viewId].some(id=>Array.isArray(user.permissoes) && user.permissoes.includes(id));
+  }
   return Array.isArray(user.permissoes) && user.permissoes.includes(viewId);
 }
 function temAcessoGrupo(user, groupId){
@@ -920,13 +1063,14 @@ function permissoesBadges(u){
   if(isAdminLevel(u)) return `<span class="badge badge-ok"><span class="dot" style="background:${BRAND[500]}"></span>Acesso total</span>`;
   const perms = u.permissoes || [];
   const partes = [];
-  NAV_GROUPS.filter(g=>g.id!=="config").forEach(g=>{
-    const itensPermitidos = g.items.filter(it=>perms.includes(it.id));
+  PERMISSOES_GRUPOS.forEach(g=>{
+    const todosItens = permItemsFlat(g);
+    const itensPermitidos = todosItens.filter(it=>perms.includes(it.id));
     if(!itensPermitidos.length) return;
-    if(itensPermitidos.length===g.items.length){
+    if(itensPermitidos.length===todosItens.length){
       partes.push(`<span class="badge badge-pending" style="margin:1px 4px 1px 0;">${esc(g.label)}</span>`);
     }else{
-      partes.push(`<span class="badge badge-pending" style="margin:1px 4px 1px 0;" title="${esc(itensPermitidos.map(it=>it.label).join(", "))}">${esc(g.label)} (${itensPermitidos.length}/${g.items.length})</span>`);
+      partes.push(`<span class="badge badge-pending" style="margin:1px 4px 1px 0;" title="${esc(itensPermitidos.map(it=>it.label).join(", "))}">${esc(g.label)} (${itensPermitidos.length}/${todosItens.length})</span>`);
     }
   });
   if(!partes.length) return `<span class="muted" style="font-size:12px;">Nenhum acesso liberado</span>`;
@@ -986,7 +1130,7 @@ function renderSidebar(){
     btn.addEventListener("click", ()=>{ STATE.view = btn.dataset.view; renderSidebar(); renderView(); });
   });
   document.getElementById("btn-logout").addEventListener("click", async ()=>{
-    STATE.session = null; STATE.currentUser = null; STATE.users=[]; STATE.lancamentos=[]; STATE.cartaoLancamentos=[]; STATE.valeLancamentos=[]; STATE.faturamentoLancamentos=[]; STATE.cartoes=[]; STATE.fornecedores=[];
+    STATE.session = null; STATE.currentUser = null; STATE.users=[]; STATE.lancamentos=[]; STATE.cartaoLancamentos=[]; STATE.valeLancamentos=[]; STATE.faturamentoLancamentos=[]; STATE.cartoes=[]; STATE.fornecedores=[]; STATE.clientes=[];
     await saveRefreshToken(null);
     renderRoot();
   });
@@ -1000,28 +1144,81 @@ function renderSemAcesso(container){
       <p style="margin-top:4px;font-size:13px;">Fale com um Admin ou Super Admin para liberar essa aba para o seu usuário.</p>
     </div>`;
 }
+
+/* ---- Menu deslizante de "conta" (Carteira/Cartões/Vales/Faturamento) ----
+   Usado pelas telas unificadas do Financeiro (Painel Principal, Entradas,
+   Saídas, Contas a Pagar/Receber e Análise Personalizada): mostra um menu de
+   abas no topo da página e desenha, embaixo, a tela daquela conta — exatamente
+   a mesma tela que já existia antes, sem nenhuma mudança de comportamento. */
+function renderComAbasDeConta(container, storageKey, contas){
+  const disponiveis = contas.filter(c=>temAcessoView(STATE.currentUser, c.acesso));
+  if(!disponiveis.length){ renderSemAcesso(container); return; }
+  let atual = STATE.contaTab[storageKey];
+  if(!atual || !disponiveis.some(c=>c.id===atual)) atual = disponiveis[0].id;
+  STATE.contaTab[storageKey] = atual;
+  container.innerHTML = `
+    <div class="conta-tabs">${disponiveis.map(c=>`<button type="button" class="conta-tab ${c.id===atual?"active":""}" data-conta="${c.id}">${esc(c.label)}</button>`).join("")}</div>
+    <div id="conta-tab-body"></div>`;
+  container.querySelectorAll(".conta-tab").forEach(btn=>{
+    btn.addEventListener("click", ()=>{
+      if(btn.dataset.conta===STATE.contaTab[storageKey]) return;
+      Object.keys(CHARTS).forEach(k=>{ CHARTS[k].destroy(); delete CHARTS[k]; });
+      STATE.contaTab[storageKey] = btn.dataset.conta;
+      renderComAbasDeConta(container, storageKey, contas);
+    });
+  });
+  const selecionada = disponiveis.find(c=>c.id===atual);
+  selecionada.render(container.querySelector("#conta-tab-body"));
+}
+function renderFinDashboard(container){
+  renderComAbasDeConta(container, "dashboard", [
+    {id:"dashboard", label:"Carteira", acesso:"dashboard", render:renderDashboard},
+    {id:"cartoes-dashboard", label:"Cartões", acesso:"cartoes-dashboard", render:renderCartoesDashboard},
+    {id:"vales-dashboard", label:"Vales", acesso:"vales-dashboard", render:renderValesDashboard},
+    {id:"fat-dashboard", label:"Faturamento", acesso:"fat-dashboard", render:renderFatDashboard},
+  ]);
+}
+function renderFinEntradas(container){
+  renderComAbasDeConta(container, "entradas", [
+    {id:"entradas", label:"Carteira", acesso:"entradas", render:(c)=>renderLancamentosView(c,"entrada")},
+    {id:"vales-lancamentos", label:"Vales", acesso:"vales-lancamentos", render:renderValesLancamentos},
+    {id:"fat-entradas", label:"Faturamento", acesso:"fat-entradas", render:(c)=>renderFatLancamentosView(c,"entrada")},
+  ]);
+}
+function renderFinSaidas(container){
+  renderComAbasDeConta(container, "saidas", [
+    {id:"saidas", label:"Carteira", acesso:"saidas", render:(c)=>renderLancamentosView(c,"saida")},
+    {id:"cartoes-lancamentos", label:"Cartões", acesso:"cartoes-lancamentos", render:renderCartoesLancamentos},
+    {id:"fat-saidas", label:"Faturamento", acesso:"fat-saidas", render:(c)=>renderFatLancamentosView(c,"saida")},
+  ]);
+}
+function renderFinContas(container){
+  renderComAbasDeConta(container, "contas", [
+    {id:"contas", label:"Carteira", acesso:"contas", render:renderContas},
+    {id:"fat-contas", label:"Faturamento", acesso:"fat-contas", render:renderFatContas},
+  ]);
+}
+function renderFinPersonalizado(container){
+  renderComAbasDeConta(container, "personalizado", [
+    {id:"personalizado", label:"Carteira", acesso:"personalizado", render:renderPersonalizado},
+    {id:"fat-personalizado", label:"Faturamento", acesso:"fat-personalizado", render:renderFatPersonalizado},
+  ]);
+}
+
 function renderView(){
   const c = document.getElementById("view-container");
   Object.keys(CHARTS).forEach(k=>{ CHARTS[k].destroy(); delete CHARTS[k]; });
   const autorizado = temAcessoView(STATE.currentUser, STATE.view);
   if(!autorizado){ renderSemAcesso(c); return; }
-  if(STATE.view==="dashboard") renderDashboard(c);
-  else if(STATE.view==="entradas") renderLancamentosView(c,"entrada");
-  else if(STATE.view==="saidas") renderLancamentosView(c,"saida");
-  else if(STATE.view==="contas") renderContas(c);
-  else if(STATE.view==="personalizado") renderPersonalizado(c);
-  else if(STATE.view==="cartoes-dashboard") renderCartoesDashboard(c);
-  else if(STATE.view==="cartoes-lancamentos") renderCartoesLancamentos(c);
-  else if(STATE.view==="vales-dashboard") renderValesDashboard(c);
-  else if(STATE.view==="vales-lancamentos") renderValesLancamentos(c);
-  else if(STATE.view==="fat-dashboard") renderFatDashboard(c);
-  else if(STATE.view==="fat-entradas") renderFatLancamentosView(c,"entrada");
-  else if(STATE.view==="fat-saidas") renderFatLancamentosView(c,"saida");
-  else if(STATE.view==="fat-contas") renderFatContas(c);
+  if(STATE.view==="fin-dashboard") renderFinDashboard(c);
+  else if(STATE.view==="fin-entradas") renderFinEntradas(c);
+  else if(STATE.view==="fin-saidas") renderFinSaidas(c);
+  else if(STATE.view==="fin-contas") renderFinContas(c);
   else if(STATE.view==="fat-duplicatas") renderFatDuplicatas(c);
-  else if(STATE.view==="fat-personalizado") renderFatPersonalizado(c);
+  else if(STATE.view==="fin-personalizado") renderFinPersonalizado(c);
   else if(STATE.view==="cad-cartoes") renderCadCartoes(c);
   else if(STATE.view==="cad-fornecedores") renderCadFornecedores(c);
+  else if(STATE.view==="cad-clientes") renderCadClientes(c);
   else if(STATE.view==="seguranca") renderSeguranca(c);
   else if(STATE.view==="usuarios") renderUsuarios(c);
   else renderSemAcesso(c);
@@ -1121,6 +1318,7 @@ function openLancamentoModal(tipo, item, onSaved){
   const isEdit = !!item;
   openModal({
     title: isEdit ? "Editar lançamento" : `Nova ${tipo==="entrada"?"entrada":"saída"}`,
+    wide: true,
     bodyHTML: lancamentoFormHTML(tipo, item),
     mount: (body)=>{
       const statusSel = body.querySelector("#f-status");
@@ -1166,6 +1364,50 @@ function openLancamentoModal(tipo, item, onSaved){
 }
 
 /* ============================== Entradas / Saídas ============================== */
+function lancamentoDetalheHTML(l){
+  const isEntrada = l.tipo==="entrada";
+  const contraLabel = isEntrada ? "Origem" : "Destino";
+  return `
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+        <div>
+          <span class="field-label">${contraLabel}</span>
+          <p style="margin:4px 0 0;font-weight:600;color:#44403c;font-size:16px;">${esc(l.contraparte)}</p>
+        </div>
+        ${badge(l.status)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campoDetalheFat("Categoria", esc(l.categoria||"—"))}
+        ${campoDetalheFat("Unidade", esc(l.unidade||"—"))}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campoDetalheFat("Valor", `<b>${currency(l.valor)}</b>`)}
+        ${campoDetalheFat(l.status==="realizado" ? "Data de realização" : "Data prevista", fmtDate(l.data_realizada||l.data_prevista))}
+      </div>
+      ${campoDetalheFat("Observações", esc(l.observacao||"—"))}
+      <div style="border-top:1px solid var(--border);padding-top:10px;">
+        <span class="field-label">Lançado por</span>
+        <p style="margin:4px 0 0;color:#a8a29e;font-size:12px;">${esc(l.usuario_nome||"—")}</p>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="lcd-fechar">Fechar</button>
+        <button type="button" class="btn btn-primary" id="lcd-editar">${icon("edit",15)} Editar</button>
+      </div>
+    </div>`;
+}
+function openLancamentoDetalheModal(l, onEdited){
+  openModal({
+    title: l.tipo==="entrada" ? "Entrada" : "Saída",
+    bodyHTML: lancamentoDetalheHTML(l),
+    mount:(body)=>{
+      body.querySelector("#lcd-fechar").addEventListener("click", closeModal);
+      body.querySelector("#lcd-editar").addEventListener("click", ()=>{
+        closeModal();
+        openLancamentoModal(l.tipo, l, onEdited);
+      });
+    }
+  });
+}
 function renderLancamentosView(container, tipo){
   const isEntrada = tipo==="entrada";
   const categorias = catsFor(tipo);
@@ -1240,7 +1482,7 @@ function renderLancamentosView(container, tipo){
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr>
+              <tr class="lanc-row" data-id="${l.id}" style="cursor:pointer;">
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
@@ -1273,6 +1515,11 @@ function renderLancamentosView(container, tipo){
       openConfirm(`Excluir o lançamento de ${currency(item.valor)} referente a "${item.contraparte}"? Essa ação não pode ser desfeita.`, async ()=>{
         try{ await deleteLancamento(item.id); refresh(); }catch(err){ toast(err.message, true); }
       });
+    }));
+    rows.querySelectorAll(".lanc-row").forEach(tr=> tr.addEventListener("click", (e)=>{
+      if(e.target.closest(".icon-btn") || e.target.closest("input")) return;
+      const item = STATE.lancamentos.find(l=>l.id===tr.dataset.id);
+      if(item) openLancamentoDetalheModal(item, refresh);
     }));
   }
 
@@ -1546,6 +1793,7 @@ function cartaoCompraFormHTML(){
 function openCartaoCompraModal(onSaved){
   openModal({
     title:"Novo gasto no cartão",
+    wide: true,
     bodyHTML: cartaoCompraFormHTML(),
     mount:(body)=>{
       const parceladoSel = body.querySelector("#cf-parcelado");
@@ -1638,6 +1886,7 @@ function cartaoEditFormHTML(item){
 function openCartaoEditModal(item, onSaved){
   openModal({
     title:"Editar gasto do cartão",
+    wide: true,
     bodyHTML: cartaoEditFormHTML(item),
     mount:(body)=>{
       body.querySelector("#ce-cancel").addEventListener("click", closeModal);
@@ -1682,6 +1931,52 @@ function openCartaoEditModal(item, onSaved){
   });
 }
 
+function cartaoLancamentoDetalheHTML(l){
+  return `
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+        <div>
+          <span class="field-label">Descrição</span>
+          <p style="margin:4px 0 0;font-weight:600;color:#44403c;font-size:16px;">${esc(l.descricao)}</p>
+        </div>
+        ${cartaoBadge(l.status)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campoDetalheFat("Categoria", esc(l.categoria||"—"))}
+        ${campoDetalheFat("Cartão", esc(l.cartao||"—"))}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campoDetalheFat("Portador", esc(l.portador||"—"))}
+        ${campoDetalheFat("Parcela", parcelaLabel(l))}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campoDetalheFat("Valor", `<b>${currency(l.valor)}</b>`)}
+        ${campoDetalheFat("Data", fmtDate(l.data))}
+      </div>
+      ${campoDetalheFat("Observações", esc(l.observacao||"—"))}
+      <div style="border-top:1px solid var(--border);padding-top:10px;">
+        <span class="field-label">Lançado por</span>
+        <p style="margin:4px 0 0;color:#a8a29e;font-size:12px;">${esc(l.usuario_nome||"—")}</p>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="cld-fechar">Fechar</button>
+        <button type="button" class="btn btn-primary" id="cld-editar">${icon("edit",15)} Editar</button>
+      </div>
+    </div>`;
+}
+function openCartaoLancamentoDetalheModal(l, onEdited){
+  openModal({
+    title: "Gasto do cartão",
+    bodyHTML: cartaoLancamentoDetalheHTML(l),
+    mount:(body)=>{
+      body.querySelector("#cld-fechar").addEventListener("click", closeModal);
+      body.querySelector("#cld-editar").addEventListener("click", ()=>{
+        closeModal();
+        openCartaoEditModal(l, onEdited);
+      });
+    }
+  });
+}
 function renderCartoesLancamentos(container){
   const cartoes = Array.from(new Set(STATE.cartaoLancamentos.map(l=>l.cartao))).sort();
   const filters = { busca:"", de:"", ate:"", cartao:"", categoria:"", status:"" };
@@ -1751,7 +2046,7 @@ function renderCartoesLancamentos(container){
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr>
+              <tr class="cartao-row" data-id="${l.id}" style="cursor:pointer;">
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${cartaoBadge(l.status)}</td>
@@ -1785,6 +2080,11 @@ function renderCartoesLancamentos(container){
       openConfirm(`Excluir o gasto "${item.descricao}" (${parcelaLabel(item)}) de ${currency(item.valor)}? Essa ação não pode ser desfeita.`, async ()=>{
         try{ await deleteCartaoLancamento(item.id); refresh(); }catch(err){ toast(err.message, true); }
       });
+    }));
+    rows.querySelectorAll(".cartao-row").forEach(tr=> tr.addEventListener("click", (e)=>{
+      if(e.target.closest(".icon-btn") || e.target.closest("input")) return;
+      const item = STATE.cartaoLancamentos.find(l=>l.id===tr.dataset.id);
+      if(item) openCartaoLancamentoDetalheModal(item, refresh);
     }));
   }
 
@@ -1927,6 +2227,7 @@ function openValeModal(item, onSaved){
   const isEdit = !!item;
   openModal({
     title: isEdit ? "Editar vale" : "Novo vale",
+    wide: true,
     bodyHTML: valeFormHTML(item),
     mount:(body)=>{
       body.querySelector("#v-cancel").addEventListener("click", closeModal);
@@ -1958,6 +2259,49 @@ function openValeModal(item, onSaved){
           else await addVale(payload);
           closeModal(); onSaved && onSaved();
         }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar vale`; }
+      });
+    }
+  });
+}
+function valeDetalheHTML(l){
+  return `
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:10px;">
+        <div>
+          <span class="field-label">Descrição</span>
+          <p style="margin:4px 0 0;font-weight:600;color:#44403c;font-size:16px;">${esc(l.descricao)}</p>
+        </div>
+        ${valeBadge(l.status)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campoDetalheFat("Categoria", esc(l.categoria||"—"))}
+        ${campoDetalheFat("Origem / Emissor", esc(l.origem||"—"))}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campoDetalheFat("Unidade", esc(l.unidade||"—"))}
+        ${campoDetalheFat("Valor", `<b>${currency(l.valor)}</b>`)}
+      </div>
+      ${campoDetalheFat(l.status==="realizado" ? "Data de recebimento" : "Data prevista", fmtDate(l.data))}
+      ${campoDetalheFat("Observações", esc(l.observacao||"—"))}
+      <div style="border-top:1px solid var(--border);padding-top:10px;">
+        <span class="field-label">Lançado por</span>
+        <p style="margin:4px 0 0;color:#a8a29e;font-size:12px;">${esc(l.usuario_nome||"—")}</p>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="vld-fechar">Fechar</button>
+        <button type="button" class="btn btn-primary" id="vld-editar">${icon("edit",15)} Editar</button>
+      </div>
+    </div>`;
+}
+function openValeDetalheModal(l, onEdited){
+  openModal({
+    title: "Vale",
+    bodyHTML: valeDetalheHTML(l),
+    mount:(body)=>{
+      body.querySelector("#vld-fechar").addEventListener("click", closeModal);
+      body.querySelector("#vld-editar").addEventListener("click", ()=>{
+        closeModal();
+        openValeModal(l, onEdited);
       });
     }
   });
@@ -2032,7 +2376,7 @@ function renderValesLancamentos(container){
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
-              <tr>
+              <tr class="vale-row" data-id="${l.id}" style="cursor:pointer;">
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${valeBadge(l.status)}</td>
@@ -2065,6 +2409,11 @@ function renderValesLancamentos(container){
       openConfirm(`Excluir o vale "${item.descricao}" de ${currency(item.valor)}? Essa ação não pode ser desfeita.`, async ()=>{
         try{ await deleteVale(item.id); refresh(); }catch(err){ toast(err.message, true); }
       });
+    }));
+    rows.querySelectorAll(".vale-row").forEach(tr=> tr.addEventListener("click", (e)=>{
+      if(e.target.closest(".icon-btn") || e.target.closest("input")) return;
+      const item = STATE.valeLancamentos.find(l=>l.id===tr.dataset.id);
+      if(item) openValeDetalheModal(item, refresh);
     }));
   }
 
@@ -2214,6 +2563,7 @@ function openFatLancamentoModal(tipo, item, onSaved){
   const isEdit = !!item;
   openModal({
     title: isEdit ? "Editar lançamento" : `Nova ${tipo==="entrada"?"entrada":"saída"} de faturamento`,
+    wide: true,
     bodyHTML: fatLancamentoFormHTML(tipo, item),
     mount: (body)=>{
       const statusSel = body.querySelector("#ff-status");
@@ -2295,7 +2645,7 @@ function renderFatLancamentosView(container, tipo){
         <p class="muted" style="margin:4px 0 0;font-size:13px;" id="fat-lanc-summary"></p>
       </div>
       <div style="display:flex;gap:8px;">
-        <button class="btn btn-outline" id="btn-importar-fat-lanc">${icon("download",16)} Importar planilha</button>
+        <button class="btn btn-outline" id="btn-importar-fat-lanc" title="Importar planilha" style="padding:9px 11px;">${icon("download",16)}</button>
         <button class="btn btn-primary" id="btn-novo-fat-lanc">${icon("plus",16)} Novo lançamento</button>
       </div>
     </div>
@@ -2723,10 +3073,10 @@ function openImportarTitulosModal(tipo, onImported){
         if(!unidade) return;
         submitBtn.disabled = true; submitBtn.innerHTML = `<span class="spinner"></span> Importando...`;
         try{
-          let novosFornecedores = 0;
+          let novasContrapartes = 0;
           for(const l of linhasAtuais){
-            const criado = await garantirFornecedor(l.nome, l.documento);
-            if(criado) novosFornecedores++;
+            const criado = tipo==="entrada" ? await garantirCliente(l.nome, l.documento) : await garantirFornecedor(l.nome, l.documento);
+            if(criado) novasContrapartes++;
           }
           const payload = linhasAtuais.map(l=>({
             tipo, categoria, contraparte: l.nome, unidade,
@@ -2739,7 +3089,7 @@ function openImportarTitulosModal(tipo, onImported){
           }));
           await addFatLancamentosEmLote(payload);
           closeModal();
-          toast(`${linhasAtuais.length} título(s) importado(s)${novosFornecedores?` · ${novosFornecedores} novo(s) em Fornecedores`:""}.`);
+          toast(`${linhasAtuais.length} título(s) importado(s)${novasContrapartes?` · ${novasContrapartes} novo(s) em ${tipo==="entrada"?"Clientes":"Fornecedores"}`:""}.`);
           onImported && onImported();
         }catch(err){ toast(err.message, true); submitBtn.disabled=false; submitBtn.innerHTML = `${icon("check",15)} Importar`; }
       });
@@ -3225,7 +3575,11 @@ function fornecedorFormHTML(item){
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">CNPJ/CPF</span>
-          <input class="input" id="ff-documento" placeholder="00.000.000/0000-00" value="${esc(item?item.documento||"":"")}" /></label>
+          <div style="display:flex;gap:6px;">
+            <input class="input" id="ff-documento" placeholder="00.000.000/0000-00" value="${esc(item?item.documento||"":"")}" style="flex:1;" />
+            <button type="button" class="btn btn-outline" id="ff-consultar-cnpj" title="Buscar dados pelo CNPJ" style="padding:0 12px;white-space:nowrap;">${icon("search",14)} Consultar</button>
+          </div>
+        </label>
         <label class="field"><span class="field-label">Categoria padrão</span>
           <input class="input" id="ff-categoria" placeholder="ex: Insumos" value="${esc(item?item.categoria_padrao||"":"")}" /></label>
       </div>
@@ -3233,6 +3587,7 @@ function fornecedorFormHTML(item){
         <input class="input" id="ff-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
       <label class="field"><span class="field-label">Observações</span>
         <textarea class="input" id="ff-obs" rows="3">${esc(item?item.observacoes||"":"")}</textarea></label>
+      <p class="field-hint" style="margin-top:-8px;">"Consultar" busca os dados do CNPJ na Receita Federal e preenche nome, telefone e observações (endereço) automaticamente.</p>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
         <button type="button" class="btn btn-outline" id="ff-cancel">Cancelar</button>
         <button type="submit" class="btn btn-primary" id="ff-submit">${icon("check",15)} Salvar fornecedor</button>
@@ -3242,9 +3597,11 @@ function fornecedorFormHTML(item){
 function openFornecedorModal(item, onSaved){
   openModal({
     title: item ? "Editar fornecedor" : "Novo fornecedor",
+    wide: true,
     bodyHTML: fornecedorFormHTML(item),
     mount:(body)=>{
       body.querySelector("#ff-cancel").addEventListener("click", closeModal);
+      wireConsultaCNPJ(body, { btn:"#ff-consultar-cnpj", documento:"#ff-documento", nome:"#ff-nome", telefone:"#ff-telefone", observacoes:"#ff-obs" });
       body.querySelector("#fornecedor-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const nome = body.querySelector("#ff-nome").value.trim();
@@ -3370,6 +3727,171 @@ function renderCadFornecedores(container){
   refresh();
 }
 
+function clienteFormHTML(item){
+  return `
+    <form id="cliente-form">
+      <label class="field"><span class="field-label">Nome</span>
+        <input class="input" id="fc-nome" placeholder="ex: Restaurante Bella Vista" value="${esc(item?item.nome:"")}" required /></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <label class="field"><span class="field-label">Telefone</span>
+          <input class="input" id="fc-telefone" placeholder="(00) 00000-0000" value="${esc(item?item.telefone||"":"")}" /></label>
+        <label class="field"><span class="field-label">E-mail</span>
+          <input class="input" type="email" id="fc-email" placeholder="contato@cliente.com" value="${esc(item?item.email||"":"")}" /></label>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <label class="field"><span class="field-label">CNPJ/CPF</span>
+          <div style="display:flex;gap:6px;">
+            <input class="input" id="fc-documento" placeholder="00.000.000/0000-00" value="${esc(item?item.documento||"":"")}" style="flex:1;" />
+            <button type="button" class="btn btn-outline" id="fc-consultar-cnpj" title="Buscar dados pelo CNPJ" style="padding:0 12px;white-space:nowrap;">${icon("search",14)} Consultar</button>
+          </div>
+        </label>
+        <label class="field"><span class="field-label">Categoria padrão</span>
+          <input class="input" id="fc-categoria" placeholder="ex: Faturamento de produtos" value="${esc(item?item.categoria_padrao||"":"")}" /></label>
+      </div>
+      <label class="field"><span class="field-label">Unidade padrão</span>
+        <input class="input" id="fc-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
+      <label class="field"><span class="field-label">Observações</span>
+        <textarea class="input" id="fc-obs" rows="3">${esc(item?item.observacoes||"":"")}</textarea></label>
+      <p class="field-hint" style="margin-top:-8px;">"Consultar" busca os dados do CNPJ na Receita Federal e preenche nome, telefone e observações (endereço) automaticamente.</p>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="fc-cancel">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="fc-submit">${icon("check",15)} Salvar cliente</button>
+      </div>
+    </form>`;
+}
+function openClienteModal(item, onSaved){
+  openModal({
+    title: item ? "Editar cliente" : "Novo cliente",
+    wide: true,
+    bodyHTML: clienteFormHTML(item),
+    mount:(body)=>{
+      body.querySelector("#fc-cancel").addEventListener("click", closeModal);
+      wireConsultaCNPJ(body, { btn:"#fc-consultar-cnpj", documento:"#fc-documento", nome:"#fc-nome", telefone:"#fc-telefone", observacoes:"#fc-obs" });
+      body.querySelector("#cliente-form").addEventListener("submit", async (e)=>{
+        e.preventDefault();
+        const nome = body.querySelector("#fc-nome").value.trim();
+        if(!nome) return;
+        const payload = {
+          nome,
+          telefone: body.querySelector("#fc-telefone").value.trim(),
+          email: body.querySelector("#fc-email").value.trim(),
+          documento: body.querySelector("#fc-documento").value.trim(),
+          categoria_padrao: body.querySelector("#fc-categoria").value.trim(),
+          unidade_padrao: body.querySelector("#fc-unidade").value.trim(),
+          observacoes: body.querySelector("#fc-obs").value.trim(),
+        };
+        const btn = body.querySelector("#fc-submit");
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+        try{
+          if(item) await editCliente(item.id, payload);
+          else await addCliente(payload);
+          closeModal(); onSaved && onSaved();
+        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar cliente`; }
+      });
+    }
+  });
+}
+function clienteDetalheHTML(cl){
+  const campo = (label, valor) => `<div><span class="field-label">${esc(label)}</span><p style="margin:4px 0 0;color:#57534e;white-space:pre-wrap;">${esc(valor||"—")}</p></div>`;
+  return `
+    <div style="display:flex;flex-direction:column;gap:14px;">
+      <div><span class="field-label">Nome</span><p style="margin:4px 0 0;font-weight:600;color:#44403c;font-size:16px;">${esc(cl.nome)}</p></div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campo("Telefone", cl.telefone)}
+        ${campo("E-mail", cl.email)}
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campo("CNPJ/CPF", cl.documento)}
+        ${campo("Categoria padrão", cl.categoria_padrao)}
+      </div>
+      ${campo("Unidade padrão", cl.unidade_padrao)}
+      ${campo("Observações", cl.observacoes)}
+      <div style="border-top:1px solid var(--border);padding-top:10px;">
+        <span class="field-label">Cadastrado por</span>
+        <p style="margin:4px 0 0;color:#a8a29e;font-size:12px;">${esc(cl.usuario_nome||"—")}</p>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="cd-fechar">Fechar</button>
+        <button type="button" class="btn btn-primary" id="cd-editar">${icon("edit",15)} Editar</button>
+      </div>
+    </div>`;
+}
+function openClienteDetalheModal(cl, onEdited){
+  openModal({
+    title: cl.nome,
+    bodyHTML: clienteDetalheHTML(cl),
+    mount:(body)=>{
+      body.querySelector("#cd-fechar").addEventListener("click", closeModal);
+      body.querySelector("#cd-editar").addEventListener("click", ()=>{
+        closeModal();
+        openClienteModal(cl, onEdited);
+      });
+    }
+  });
+}
+function renderCadClientes(container){
+  const sortState = { key:"nome", dir:"asc" };
+  const sortExtractors = {
+    nome: c=>c.nome, telefone: c=>c.telefone, observacoes: c=>c.observacoes,
+    documento: c=>c.documento, categoria: c=>c.categoria_padrao, unidade: c=>c.unidade_padrao, usuario: c=>c.usuario_nome,
+  };
+
+  function refresh(){
+    const dados = ordenarPor(STATE.clientes, sortState, sortExtractors);
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+        <div>
+          <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Cadastro de Clientes</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.clientes.length} cliente(s) cadastrado(s) · clique numa linha para ver todos os detalhes.</p>
+        </div>
+        <button class="btn btn-primary" id="btn-novo-cliente">${icon("plus",16)} Novo cliente</button>
+      </div>
+      <div class="card" style="overflow-x:auto;">
+        <table>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <tbody>
+            ${dados.map(cl=>`
+              <tr class="cliente-row" data-id="${cl.id}" style="cursor:pointer;">
+                <td style="font-weight:500;color:#44403c;">${esc(cl.nome)}</td>
+                <td style="color:#78716c;">${esc(cl.telefone||"—")}</td>
+                <td style="color:#78716c;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(cl.observacoes||"")}">${esc(cl.observacoes||"—")}</td>
+                <td style="color:#78716c;">${esc(cl.documento||"—")}</td>
+                <td style="color:#78716c;">${esc(cl.categoria_padrao||"—")}</td>
+                <td style="color:#78716c;">${esc(cl.unidade_padrao||"—")}</td>
+                <td style="color:#a8a29e;font-size:12px;">${esc(cl.usuario_nome||"—")}</td>
+                <td>
+                  <div style="display:flex;justify-content:flex-end;gap:2px;">
+                    <button class="icon-btn edit-cliente-btn" data-id="${cl.id}">${icon("edit",15,"#78716c")}</button>
+                    <button class="icon-btn danger del-cliente-btn" data-id="${cl.id}">${icon("trash",15,DANGER)}</button>
+                  </div>
+                </td>
+              </tr>`).join("") || `<tr><td colspan="8" class="empty">Nenhum cliente cadastrado ainda.</td></tr>`}
+          </tbody>
+        </table>
+      </div>`;
+
+    wireSort(container, sortState, refresh);
+    wireTopScroll(container);
+    container.querySelector("#btn-novo-cliente").addEventListener("click", ()=> openClienteModal(null, refresh));
+    container.querySelectorAll(".cliente-row").forEach(tr=> tr.addEventListener("click", (e)=>{
+      if(e.target.closest(".icon-btn")) return;
+      const item = STATE.clientes.find(cl=>cl.id===tr.dataset.id);
+      openClienteDetalheModal(item, refresh);
+    }));
+    container.querySelectorAll(".edit-cliente-btn").forEach(b=> b.addEventListener("click", ()=>{
+      const item = STATE.clientes.find(cl=>cl.id===b.dataset.id);
+      openClienteModal(item, refresh);
+    }));
+    container.querySelectorAll(".del-cliente-btn").forEach(b=> b.addEventListener("click", ()=>{
+      const item = STATE.clientes.find(cl=>cl.id===b.dataset.id);
+      openConfirm(`Excluir o cliente "${item.nome}"? Essa ação não pode ser desfeita.`, async ()=>{
+        try{ await deleteCliente(item.id); refresh(); }catch(err){ toast(err.message, true); }
+      });
+    }));
+  }
+  refresh();
+}
+
 function renderSeguranca(container){
   container.innerHTML = `
     <div style="margin-bottom:18px;">
@@ -3463,27 +3985,34 @@ function usuarioFormHTML(item, actingCargo){
         ${actingCargo!=="super_admin" ? `<span class="field-hint">Só um Super Admin pode criar ou editar contas Admin/Super Admin.</span>` : ""}
       </label>
       <div id="uf-permissoes-wrap" style="display:${cargoAtual==="usuario"?"block":"none"};">
-        <span class="field-label">Categorias e abas liberadas para este usuário</span>
+        <span class="field-label">Categorias e contas liberadas para este usuário</span>
         <div style="display:flex;flex-direction:column;gap:10px;margin-bottom:6px;">
-          ${NAV_GROUPS.filter(g=>g.id!=="config").map(g=>{
-            const todosMarcados = g.items.every(it=>permissoesAtuais.includes(it.id));
+          ${PERMISSOES_GRUPOS.map(g=>{
+            const todosItens = permItemsFlat(g);
+            const todosMarcados = todosItens.every(it=>permissoesAtuais.includes(it.id));
             return `
             <div class="card" style="padding:10px 12px;">
-              <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:${BRAND[700]};cursor:pointer;margin-bottom:7px;">
+              <label style="display:flex;align-items:center;gap:8px;font-size:13px;font-weight:600;color:${BRAND[700]};cursor:pointer;margin-bottom:9px;">
                 <input type="checkbox" class="uf-group-check" data-group="${g.id}" ${todosMarcados?"checked":""} style="width:15px;height:15px;flex-shrink:0;" />
                 ${icon(g.ic,15,BRAND[600])} ${esc(g.label)}
               </label>
-              <div style="display:flex;flex-direction:column;gap:5px;padding-left:23px;">
-                ${g.items.map(it=>`
-                  <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:#57534e;cursor:pointer;">
-                    <input type="checkbox" class="uf-perm-check" data-group="${g.id}" value="${it.id}" ${permissoesAtuais.includes(it.id)?"checked":""} style="width:14px;height:14px;flex-shrink:0;" />
-                    ${esc(it.label)}
-                  </label>`).join("")}
+              <div style="display:flex;flex-direction:column;gap:11px;padding-left:23px;">
+                ${g.subgrupos.map(sg=>`
+                  <div>
+                    <p style="margin:0 0 5px;font-size:10.5px;font-weight:600;text-transform:uppercase;letter-spacing:.04em;color:#a8a29e;">${esc(sg.label)}</p>
+                    <div style="display:flex;flex-direction:column;gap:5px;">
+                      ${sg.items.map(it=>`
+                        <label style="display:flex;align-items:center;gap:8px;font-size:12.5px;color:#57534e;cursor:pointer;">
+                          <input type="checkbox" class="uf-perm-check" data-group="${g.id}" value="${it.id}" ${permissoesAtuais.includes(it.id)?"checked":""} style="width:14px;height:14px;flex-shrink:0;" />
+                          ${esc(it.label)}
+                        </label>`).join("")}
+                    </div>
+                  </div>`).join("")}
               </div>
             </div>`;
           }).join("")}
         </div>
-        <span class="field-hint">Marque a categoria inteira ou só as abas específicas dentro dela. Admins e Super Admins sempre têm acesso a tudo, incluindo esta tela.</span>
+        <span class="field-hint">Marque a categoria inteira ou só as contas/abas específicas dentro dela — cada uma corresponde a uma aba do menu deslizante nas telas de Financeiro. Admins e Super Admins sempre têm acesso a tudo, incluindo esta tela.</span>
       </div>
       ${item ? `<p class="field-hint">Alteração de e-mail ou senha deve ser feita pelo próprio usuário na tela de login do Supabase.</p>` : `<p class="field-hint">Dependendo da configuração do projeto, pode ser necessário confirmar o e-mail antes do primeiro acesso.</p>`}
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
