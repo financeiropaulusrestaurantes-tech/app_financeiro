@@ -1603,7 +1603,7 @@ function renderContas(container){
       </div>`;
     container.innerHTML = `
       <h2 class="serif" style="margin:0 0 4px;font-size:24px;color:${BRAND[800]};">Contas a Pagar e a Receber</h2>
-      <p class="muted" style="margin:0 0 18px;font-size:13px;">Lançamentos previstos que ainda não foram confirmados.</p>
+      <p class="muted" style="margin:0 0 18px;font-size:13px;">Lançamentos previstos que ainda não foram confirmados.${saldoContasInlineHTML()}</p>
       <div style="display:flex;flex-direction:column;gap:14px;" class="contas-flex">
         ${lista("Contas a Pagar", pagar, DANGER, "Marcar como pago")}
         ${lista("Contas a Receber", receber, BRAND[600], "Marcar como recebido")}
@@ -2851,7 +2851,7 @@ function renderFatContas(container){
     const pagar = STATE.faturamentoLancamentos.filter(l=>l.tipo==="saida").filter(passaFiltros).sort((a,b)=>a.data_prevista.localeCompare(b.data_prevista));
     const receber = STATE.faturamentoLancamentos.filter(l=>l.tipo==="entrada").filter(passaFiltros).sort((a,b)=>a.data_prevista.localeCompare(b.data_prevista));
 
-    document.getElementById("contas-summary").innerHTML = `${pagar.length+receber.length} lançamento(s) encontrado(s) · A pagar: <b style="color:${DANGER};">${currency(pagar.reduce((s,i)=>s+i.valor,0))}</b> · A receber: <b style="color:${BRAND[600]};">${currency(receber.reduce((s,i)=>s+i.valor,0))}</b>`;
+    document.getElementById("contas-summary").innerHTML = `${pagar.length+receber.length} lançamento(s) encontrado(s) · A pagar: <b style="color:${DANGER};">${currency(pagar.reduce((s,i)=>s+i.valor,0))}</b> · A receber: <b style="color:${BRAND[600]};">${currency(receber.reduce((s,i)=>s+i.valor,0))}</b>${saldoContasInlineHTML()}`;
 
     const lista = (titulo, itens, cor, acaoLabel) => `
       <div class="card" style="flex:1;overflow:hidden;">
@@ -3260,7 +3260,7 @@ function renderFatDuplicatas(container){
     Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const totalAberto = duplicatas.filter(l=>l.status==="previsto").reduce((s,l)=>s+l.valor,0);
-    document.getElementById("dup-summary").innerHTML = `${duplicatas.length} duplicata(s) encontrada(s) · Em aberto: <b style="color:${DANGER};">${currency(totalAberto)}</b>`;
+    document.getElementById("dup-summary").innerHTML = `${duplicatas.length} duplicata(s) encontrada(s) · Em aberto: <b style="color:${DANGER};">${currency(totalAberto)}</b>${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("dup-results");
     rows.innerHTML = `
