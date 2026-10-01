@@ -3937,13 +3937,51 @@ function renderSeguranca(container){
   container.innerHTML = `
     <div style="margin-bottom:18px;">
       <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Segurança</h2>
-      <p class="muted" style="margin:4px 0 0;font-size:13px;">Gerencie a autenticação de 2 fatores da sua própria conta.</p>
+      <p class="muted" style="margin:4px 0 0;font-size:13px;">Gerencie a senha e a autenticação de 2 fatores da sua própria conta.</p>
+    </div>
+    <div class="card" style="padding:22px;max-width:440px;margin-bottom:18px;">
+      <h3 class="serif" style="margin:0 0 4px;font-size:16px;color:${BRAND[800]};">Alterar senha</h3>
+      <p class="muted" style="margin:0 0 14px;font-size:13px;">Defina uma nova senha para o seu próprio login.</p>
+      <form id="senha-form">
+        <label class="field"><span class="field-label">Nova senha</span>
+          <input class="input" type="password" id="sg-senha" minlength="6" required /></label>
+        <label class="field"><span class="field-label">Confirmar nova senha</span>
+          <input class="input" type="password" id="sg-senha2" minlength="6" required /></label>
+        <p class="field-hint" id="sg-senha-err" style="display:none;color:${DANGER};"></p>
+        <div style="display:flex;justify-content:flex-end;margin-top:6px;">
+          <button type="submit" class="btn btn-primary" id="sg-senha-submit">${icon("check",15)} Salvar nova senha</button>
+        </div>
+      </form>
     </div>
     <div class="card" style="padding:22px;max-width:440px;">
       <div id="seg-conteudo" style="min-height:120px;display:flex;align-items:center;justify-content:center;">
         <span class="spinner" style="border-color:rgba(0,0,0,.15);border-top-color:${BRAND[600]};"></span>
       </div>
     </div>`;
+
+  const senhaForm = container.querySelector("#senha-form");
+  senhaForm.addEventListener("submit", async (e)=>{
+    e.preventDefault();
+    const errEl = container.querySelector("#sg-senha-err");
+    errEl.style.display = "none";
+    const senha1 = container.querySelector("#sg-senha").value;
+    const senha2 = container.querySelector("#sg-senha2").value;
+    if(senha1.length < 6){ errEl.textContent = "A senha deve ter pelo menos 6 caracteres."; errEl.style.display = "block"; return; }
+    if(senha1 !== senha2){ errEl.textContent = "As senhas não coincidem."; errEl.style.display = "block"; return; }
+    const btn = container.querySelector("#sg-senha-submit");
+    btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+    try{
+      await sbAuthRequest("/user", STATE.session.access_token, { method:"PUT", body:{ password: senha1 } });
+      toast("Senha alterada com sucesso!");
+      senhaForm.reset();
+    }catch(err){
+      errEl.textContent = err.message;
+      errEl.style.display = "block";
+    }finally{
+      btn.disabled = false; btn.innerHTML = `${icon("check",15)} Salvar nova senha`;
+    }
+  });
+
   async function carregar(){
     const conteudo = document.getElementById("seg-conteudo");
     if(!conteudo) return;
@@ -4055,7 +4093,7 @@ function usuarioFormHTML(item, actingCargo){
         </div>
         <span class="field-hint">Marque a categoria inteira ou só as contas/abas específicas dentro dela — cada uma corresponde a uma aba do menu deslizante nas telas de Financeiro. Admins e Super Admins sempre têm acesso a tudo, incluindo esta tela.</span>
       </div>
-      ${item ? `<p class="field-hint">Alteração de e-mail ou senha deve ser feita pelo próprio usuário na tela de login do Supabase.</p>` : `<p class="field-hint">Dependendo da configuração do projeto, pode ser necessário confirmar o e-mail antes do primeiro acesso.</p>`}
+      ${item ? `<p class="field-hint">Alteração de e-mail deve ser feita pelo próprio usuário na tela de login do Supabase. A senha pode ser alterada pelo próprio usuário em Configurações → Segurança.</p>` : `<p class="field-hint">Dependendo da configuração do projeto, pode ser necessário confirmar o e-mail antes do primeiro acesso.</p>`}
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
         <button type="button" class="btn btn-outline" id="uf-cancel">Cancelar</button>
         <button type="submit" class="btn btn-primary" id="uf-submit">${icon("check",15)} Salvar</button>
