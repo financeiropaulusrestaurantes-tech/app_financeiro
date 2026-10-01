@@ -354,14 +354,14 @@ async function mfaUnenroll(accessToken, factorId){
   return sbAuthRequest(`/factors/${factorId}`, accessToken, { method:"DELETE" });
 }
 
-async function sbFetch(path, {method="GET", body, retry=true}={}){
+async function sbFetch(path, {method="GET", body, retry=true, upsert=false}={}){
   const doFetch = (token) => fetch(`${SB_URL}${path}`, {
     method,
     headers:{
       apikey: SB_ANON_KEY,
       Authorization: `Bearer ${token}`,
       "Content-Type":"application/json",
-      ...(method!=="GET" ? {"Prefer":"return=representation"} : {}),
+      ...(method!=="GET" ? {"Prefer": upsert ? "return=representation,resolution=merge-duplicates" : "return=representation"} : {}),
     },
     body: body ? JSON.stringify(body) : undefined,
   });
@@ -785,10 +785,18 @@ function manageCategoriasBtn(tipo){
 async function criarUsuario({ nome, email, senha, cargo, permissoes }){
   const data = await sbAuthSignup(email, senha);
   const newId = data.user && data.user.id;
-  if(newId){
-    const [perfil] = await sbFetch(`/rest/v1/profiles?id=eq.${newId}`, { method:"PATCH", body:{ nome, email, cargo, permissoes: permissoes||[] } });
-    STATE.users = [...STATE.users, perfil].sort((a,b)=>a.nome.localeCompare(b.nome));
-  }
+  if(!newId) throw new Error("A autenticação não retornou o novo usuário. Tente novamente.");
+  // Cria (ou, se algum gatilho do Supabase já tiver criado uma linha básica,
+  // atualiza) a linha correspondente em public.profiles — sem depender de
+  // nenhum trigger externo, que é o que fazia o usuário ficar "fantasma":
+  // criado na Autenticação, mas sem perfil, sem aparecer na lista e sem
+  // conseguir logar.
+  const [perfil] = await sbFetch(`/rest/v1/profiles?on_conflict=id`, {
+    method:"POST", upsert:true,
+    body:{ id:newId, nome, email, cargo, permissoes: permissoes||[] },
+  });
+  if(!perfil) throw new Error("O usuário foi criado na autenticação, mas não foi possível salvar o perfil em public.profiles. Verifique se a tabela aceita INSERT para o papel authenticated.");
+  STATE.users = [...STATE.users, perfil].sort((a,b)=>a.nome.localeCompare(b.nome));
   return data;
 }
 async function editarUsuario(id, { nome, cargo, permissoes }){
