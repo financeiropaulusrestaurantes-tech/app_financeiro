@@ -1065,11 +1065,11 @@ const NAV_GROUPS = [
     {id:"fat-duplicatas", label:"Duplicatas a Pagar", ic:"card"},
     {id:"fin-personalizado", label:"Análise Personalizada", ic:"sparkles"},
     {id:"fin-cadastros", label:"Cadastros", ic:"folder"},
+    {id:"contas-bancarias", label:"Contas Bancárias", ic:"bank"},
   ]},
   { id:"config", label:"Configurações", ic:"settings", items:[
     {id:"seguranca", label:"Segurança", ic:"lock"},
     {id:"usuarios", label:"Usuários", ic:"users"},
-    {id:"contas-bancarias", label:"Contas Bancárias", ic:"bank"},
   ]},
 ];
 // Cada tela unificada do módulo Financeiro (Painel Principal, Entradas, Saídas,
@@ -1117,6 +1117,9 @@ const PERMISSOES_GRUPOS = [
       {id:"personalizado", label:"Carteira"},
       {id:"fat-personalizado", label:"Faturamento"},
     ]},
+    { label:"Contas Bancárias", items:[
+      {id:"contas-bancarias", label:"Contas Bancárias"},
+    ]},
   ]},
   { id:"cadastros", label:"Cadastros", ic:"folder", subgrupos:[
     { label:"Cadastros", items:[
@@ -1125,11 +1128,6 @@ const PERMISSOES_GRUPOS = [
       {id:"cad-clientes", label:"Clientes"},
       {id:"cad-categorias-fin", label:"Categoria Financeira"},
       {id:"cad-tipos-conta", label:"Tipo de Contas"},
-    ]},
-  ]},
-  { id:"config", label:"Configurações", ic:"settings", subgrupos:[
-    { label:"Configurações", items:[
-      {id:"contas-bancarias", label:"Contas Bancárias"},
     ]},
   ]},
 ];
@@ -3751,8 +3749,11 @@ function fornecedorFormHTML(item){
             <button type="button" class="btn btn-outline" id="ff-consultar-cnpj" title="Buscar dados pelo CNPJ" style="padding:0 12px;white-space:nowrap;">${icon("search",14)} Consultar</button>
           </div>
         </label>
-        <label class="field"><span class="field-label">Categoria padrão</span>
-          <input class="input" id="ff-categoria" placeholder="ex: Insumos" value="${esc(item?item.categoria_padrao||"":"")}" /></label>
+        <label class="field"><span class="field-label">Categoria financeira</span>
+          <select class="input" id="ff-categoria">
+            <option value="">Selecione...</option>
+            ${STATE.categoriasFinanceiras.map(c=>`<option value="${esc(c.categoria)}" ${item&&item.categoria_padrao===c.categoria?"selected":""}>${esc(c.categoria)}${c.status==="inativo"?" (inativa)":""}</option>`).join("")}
+          </select></label>
       </div>
       <label class="field"><span class="field-label">Unidade padrão</span>
         <input class="input" id="ff-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
@@ -3808,7 +3809,7 @@ function fornecedorDetalheHTML(f){
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         ${campo("CNPJ/CPF", f.documento)}
-        ${campo("Categoria padrão", f.categoria_padrao)}
+        ${campo("Categoria financeira", f.categoria_padrao)}
       </div>
       ${campo("Unidade padrão", f.unidade_padrao)}
       ${campo("Observações", f.observacoes)}
@@ -3916,8 +3917,11 @@ function clienteFormHTML(item){
             <button type="button" class="btn btn-outline" id="fc-consultar-cnpj" title="Buscar dados pelo CNPJ" style="padding:0 12px;white-space:nowrap;">${icon("search",14)} Consultar</button>
           </div>
         </label>
-        <label class="field"><span class="field-label">Categoria padrão</span>
-          <input class="input" id="fc-categoria" placeholder="ex: Faturamento de produtos" value="${esc(item?item.categoria_padrao||"":"")}" /></label>
+        <label class="field"><span class="field-label">Categoria financeira</span>
+          <select class="input" id="fc-categoria">
+            <option value="">Selecione...</option>
+            ${STATE.categoriasFinanceiras.map(c=>`<option value="${esc(c.categoria)}" ${item&&item.categoria_padrao===c.categoria?"selected":""}>${esc(c.categoria)}${c.status==="inativo"?" (inativa)":""}</option>`).join("")}
+          </select></label>
       </div>
       <label class="field"><span class="field-label">Unidade padrão</span>
         <input class="input" id="fc-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
@@ -3973,7 +3977,7 @@ function clienteDetalheHTML(cl){
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         ${campo("CNPJ/CPF", cl.documento)}
-        ${campo("Categoria padrão", cl.categoria_padrao)}
+        ${campo("Categoria financeira", cl.categoria_padrao)}
       </div>
       ${campo("Unidade padrão", cl.unidade_padrao)}
       ${campo("Observações", cl.observacoes)}
