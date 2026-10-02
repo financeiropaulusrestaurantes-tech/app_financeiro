@@ -587,6 +587,8 @@ function wireConsultaCNPJ(body, ids){
       docInput.value = formatarCNPJ(dados.cnpj || docInput.value);
       const nomeInput = body.querySelector(ids.nome);
       if(nomeInput) nomeInput.value = dados.nome_fantasia || dados.razao_social || nomeInput.value;
+      const nomeFantasiaInput = ids.nomeFantasia && body.querySelector(ids.nomeFantasia);
+      if(nomeFantasiaInput && !nomeFantasiaInput.value.trim() && dados.nome_fantasia) nomeFantasiaInput.value = dados.nome_fantasia;
       const telInput = body.querySelector(ids.telefone);
       if(telInput && !telInput.value.trim()){
         const tel = formatarTelefoneConsulta(dados.ddd_telefone_1);
@@ -3734,8 +3736,12 @@ function renderCadCartoes(container){
 function fornecedorFormHTML(item){
   return `
     <form id="fornecedor-form">
-      <label class="field"><span class="field-label">Nome</span>
-        <input class="input" id="ff-nome" placeholder="ex: Distribuidora Almeida" value="${esc(item?item.nome:"")}" required /></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <label class="field"><span class="field-label">Nome</span>
+          <input class="input" id="ff-nome" placeholder="ex: Distribuidora Almeida" value="${esc(item?item.nome:"")}" required /></label>
+        <label class="field"><span class="field-label">Nome fantasia</span>
+          <input class="input" id="ff-nome-fantasia" placeholder="ex: Almeida Distribuidora" value="${esc(item?item.nome_fantasia||"":"")}" /></label>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">Telefone</span>
           <input class="input" id="ff-telefone" placeholder="(00) 00000-0000" value="${esc(item?item.telefone||"":"")}" /></label>
@@ -3773,13 +3779,14 @@ function openFornecedorModal(item, onSaved){
     bodyHTML: fornecedorFormHTML(item),
     mount:(body)=>{
       body.querySelector("#ff-cancel").addEventListener("click", closeModal);
-      wireConsultaCNPJ(body, { btn:"#ff-consultar-cnpj", documento:"#ff-documento", nome:"#ff-nome", telefone:"#ff-telefone", observacoes:"#ff-obs" });
+      wireConsultaCNPJ(body, { btn:"#ff-consultar-cnpj", documento:"#ff-documento", nome:"#ff-nome", nomeFantasia:"#ff-nome-fantasia", telefone:"#ff-telefone", observacoes:"#ff-obs" });
       body.querySelector("#fornecedor-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const nome = body.querySelector("#ff-nome").value.trim();
         if(!nome) return;
         const payload = {
           nome,
+          nome_fantasia: body.querySelector("#ff-nome-fantasia").value.trim(),
           telefone: body.querySelector("#ff-telefone").value.trim(),
           email: body.querySelector("#ff-email").value.trim(),
           documento: body.querySelector("#ff-documento").value.trim(),
@@ -3803,6 +3810,7 @@ function fornecedorDetalheHTML(f){
   return `
     <div style="display:flex;flex-direction:column;gap:14px;">
       <div><span class="field-label">Nome</span><p style="margin:4px 0 0;font-weight:600;color:#44403c;font-size:16px;">${esc(f.nome)}</p></div>
+      ${campo("Nome fantasia", f.nome_fantasia)}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         ${campo("Telefone", f.telefone)}
         ${campo("E-mail", f.email)}
@@ -3839,7 +3847,7 @@ function openFornecedorDetalheModal(f, onEdited){
 function renderCadFornecedores(container){
   const sortState = { key:"nome", dir:"asc" };
   const sortExtractors = {
-    nome: f=>f.nome, telefone: f=>f.telefone, observacoes: f=>f.observacoes,
+    nome: f=>f.nome, nomeFantasia: f=>f.nome_fantasia, telefone: f=>f.telefone, observacoes: f=>f.observacoes,
     documento: f=>f.documento, categoria: f=>f.categoria_padrao, unidade: f=>f.unidade_padrao, usuario: f=>f.usuario_nome,
   };
 
@@ -3855,11 +3863,12 @@ function renderCadFornecedores(container){
       </div>
       <div class="card" style="overflow-x:auto;">
         <table>
-          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Nome fantasia","nomeFantasia",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${dados.map(f=>`
               <tr class="fornecedor-row" data-id="${f.id}" style="cursor:pointer;">
                 <td style="font-weight:500;color:#44403c;">${esc(f.nome)}</td>
+                <td style="color:#78716c;">${esc(f.nome_fantasia||"—")}</td>
                 <td style="color:#78716c;">${esc(f.telefone||"—")}</td>
                 <td style="color:#78716c;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(f.observacoes||"")}">${esc(f.observacoes||"—")}</td>
                 <td style="color:#78716c;">${esc(f.documento||"—")}</td>
@@ -3872,7 +3881,7 @@ function renderCadFornecedores(container){
                     <button class="icon-btn danger del-fornecedor-btn" data-id="${f.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="8" class="empty">Nenhum fornecedor cadastrado ainda.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="9" class="empty">Nenhum fornecedor cadastrado ainda.</td></tr>`}
           </tbody>
         </table>
       </div>`;
@@ -3902,8 +3911,12 @@ function renderCadFornecedores(container){
 function clienteFormHTML(item){
   return `
     <form id="cliente-form">
-      <label class="field"><span class="field-label">Nome</span>
-        <input class="input" id="fc-nome" placeholder="ex: Restaurante Bella Vista" value="${esc(item?item.nome:"")}" required /></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <label class="field"><span class="field-label">Nome</span>
+          <input class="input" id="fc-nome" placeholder="ex: Restaurante Bella Vista" value="${esc(item?item.nome:"")}" required /></label>
+        <label class="field"><span class="field-label">Nome fantasia</span>
+          <input class="input" id="fc-nome-fantasia" placeholder="ex: Bella Vista" value="${esc(item?item.nome_fantasia||"":"")}" /></label>
+      </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">Telefone</span>
           <input class="input" id="fc-telefone" placeholder="(00) 00000-0000" value="${esc(item?item.telefone||"":"")}" /></label>
@@ -3941,13 +3954,14 @@ function openClienteModal(item, onSaved){
     bodyHTML: clienteFormHTML(item),
     mount:(body)=>{
       body.querySelector("#fc-cancel").addEventListener("click", closeModal);
-      wireConsultaCNPJ(body, { btn:"#fc-consultar-cnpj", documento:"#fc-documento", nome:"#fc-nome", telefone:"#fc-telefone", observacoes:"#fc-obs" });
+      wireConsultaCNPJ(body, { btn:"#fc-consultar-cnpj", documento:"#fc-documento", nome:"#fc-nome", nomeFantasia:"#fc-nome-fantasia", telefone:"#fc-telefone", observacoes:"#fc-obs" });
       body.querySelector("#cliente-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const nome = body.querySelector("#fc-nome").value.trim();
         if(!nome) return;
         const payload = {
           nome,
+          nome_fantasia: body.querySelector("#fc-nome-fantasia").value.trim(),
           telefone: body.querySelector("#fc-telefone").value.trim(),
           email: body.querySelector("#fc-email").value.trim(),
           documento: body.querySelector("#fc-documento").value.trim(),
@@ -3971,6 +3985,7 @@ function clienteDetalheHTML(cl){
   return `
     <div style="display:flex;flex-direction:column;gap:14px;">
       <div><span class="field-label">Nome</span><p style="margin:4px 0 0;font-weight:600;color:#44403c;font-size:16px;">${esc(cl.nome)}</p></div>
+      ${campo("Nome fantasia", cl.nome_fantasia)}
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         ${campo("Telefone", cl.telefone)}
         ${campo("E-mail", cl.email)}
@@ -4007,7 +4022,7 @@ function openClienteDetalheModal(cl, onEdited){
 function renderCadClientes(container){
   const sortState = { key:"nome", dir:"asc" };
   const sortExtractors = {
-    nome: c=>c.nome, telefone: c=>c.telefone, observacoes: c=>c.observacoes,
+    nome: c=>c.nome, nomeFantasia: c=>c.nome_fantasia, telefone: c=>c.telefone, observacoes: c=>c.observacoes,
     documento: c=>c.documento, categoria: c=>c.categoria_padrao, unidade: c=>c.unidade_padrao, usuario: c=>c.usuario_nome,
   };
 
@@ -4023,11 +4038,12 @@ function renderCadClientes(container){
       </div>
       <div class="card" style="overflow-x:auto;">
         <table>
-          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Nome fantasia","nomeFantasia",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${dados.map(cl=>`
               <tr class="cliente-row" data-id="${cl.id}" style="cursor:pointer;">
                 <td style="font-weight:500;color:#44403c;">${esc(cl.nome)}</td>
+                <td style="color:#78716c;">${esc(cl.nome_fantasia||"—")}</td>
                 <td style="color:#78716c;">${esc(cl.telefone||"—")}</td>
                 <td style="color:#78716c;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(cl.observacoes||"")}">${esc(cl.observacoes||"—")}</td>
                 <td style="color:#78716c;">${esc(cl.documento||"—")}</td>
@@ -4040,7 +4056,7 @@ function renderCadClientes(container){
                     <button class="icon-btn danger del-cliente-btn" data-id="${cl.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="8" class="empty">Nenhum cliente cadastrado ainda.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="9" class="empty">Nenhum cliente cadastrado ainda.</td></tr>`}
           </tbody>
         </table>
       </div>`;
