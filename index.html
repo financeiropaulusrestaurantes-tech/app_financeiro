@@ -405,7 +405,7 @@ async function sbFetchAll(path){
 }
 
 /* ============================== Estado global ============================== */
-const STATE = { loading:true, session:null, currentUser:null, users:[], lancamentos:[], cartaoLancamentos:[], valeLancamentos:[], faturamentoLancamentos:[], categorias:[], cartoes:[], fornecedores:[], clientes:[], contasBancarias:[], view:"fin-dashboard", navOpen:{}, contaTab:{} };
+const STATE = { loading:true, session:null, currentUser:null, users:[], lancamentos:[], cartaoLancamentos:[], valeLancamentos:[], faturamentoLancamentos:[], categorias:[], cartoes:[], fornecedores:[], clientes:[], contasBancarias:[], categoriasFinanceiras:[], tiposConta:[], view:"fin-dashboard", navOpen:{}, contaTab:{} };
 const CHARTS = {};
 
 async function bootstrap(){
@@ -430,7 +430,7 @@ async function loadProfileAndData(){
   const profile = profiles && profiles[0];
   if(!profile) throw new Error("Perfil não encontrado.");
   STATE.currentUser = { id: STATE.session.user.id, email: STATE.session.user.email, nome: profile.nome, cargo: profile.cargo, permissoes: profile.permissoes || [] };
-  await Promise.all([reloadLancamentos(), reloadCartaoLancamentos(), reloadValeLancamentos(), reloadFaturamentoLancamentos(), reloadCategorias(), reloadCartoes(), reloadFornecedores(), reloadClientes(), reloadContasBancarias(), isAdminLevel(STATE.currentUser) ? reloadUsers() : Promise.resolve()]);
+  await Promise.all([reloadLancamentos(), reloadCartaoLancamentos(), reloadValeLancamentos(), reloadFaturamentoLancamentos(), reloadCategorias(), reloadCartoes(), reloadFornecedores(), reloadClientes(), reloadContasBancarias(), reloadCategoriasFinanceiras(), reloadTiposConta(), isAdminLevel(STATE.currentUser) ? reloadUsers() : Promise.resolve()]);
   ajustarViewInicial();
 }
 function ajustarViewInicial(){
@@ -452,6 +452,8 @@ async function reloadFornecedores(){ STATE.fornecedores = await sbFetchAll(`/res
 async function reloadClientes(){ STATE.clientes = await sbFetchAll(`/rest/v1/clientes?select=*&order=nome.asc`); }
 async function reloadUsers(){ STATE.users = await sbFetchAll(`/rest/v1/profiles?select=*&order=nome.asc`); }
 async function reloadContasBancarias(){ STATE.contasBancarias = await sbFetchAll(`/rest/v1/contas_bancarias?select=*&order=nome.asc`); }
+async function reloadCategoriasFinanceiras(){ STATE.categoriasFinanceiras = await sbFetchAll(`/rest/v1/categorias_financeiras?select=*&order=ordem.asc`); }
+async function reloadTiposConta(){ STATE.tiposConta = await sbFetchAll(`/rest/v1/tipos_conta?select=*&order=nome.asc`); }
 
 async function addCategoria(tipo, nome){
   const [nova] = await sbFetch(`/rest/v1/categorias`, { method:"POST", body:{ tipo, nome } });
@@ -501,6 +503,40 @@ async function deleteContaBancaria(id){
   await sbFetch(`/rest/v1/contas_bancarias?id=eq.${id}`, { method:"DELETE" });
   STATE.contasBancarias = STATE.contasBancarias.filter(c=>c.id!==id);
 }
+/* ---- Categoria Financeira ---- */
+async function addCategoriaFinanceira(data){
+  const payload = { ...data, usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome };
+  const [nova] = await sbFetch(`/rest/v1/categorias_financeiras`, { method:"POST", body:payload });
+  STATE.categoriasFinanceiras = [...STATE.categoriasFinanceiras, nova].sort((a,b)=> (a.ordem??0)-(b.ordem??0) || (a.categoria||"").localeCompare(b.categoria||""));
+  return nova;
+}
+async function editCategoriaFinanceira(id, data){
+  const [atualizada] = await sbFetch(`/rest/v1/categorias_financeiras?id=eq.${id}`, { method:"PATCH", body:data });
+  STATE.categoriasFinanceiras = STATE.categoriasFinanceiras.map(c=> c.id===id ? atualizada : c).sort((a,b)=> (a.ordem??0)-(b.ordem??0) || (a.categoria||"").localeCompare(b.categoria||""));
+  return atualizada;
+}
+async function deleteCategoriaFinanceira(id){
+  await sbFetch(`/rest/v1/categorias_financeiras?id=eq.${id}`, { method:"DELETE" });
+  STATE.categoriasFinanceiras = STATE.categoriasFinanceiras.filter(c=>c.id!==id);
+}
+
+/* ---- Tipo de Contas ---- */
+async function addTipoConta(data){
+  const payload = { ...data, usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome };
+  const [novo] = await sbFetch(`/rest/v1/tipos_conta`, { method:"POST", body:payload });
+  STATE.tiposConta = [...STATE.tiposConta, novo].sort((a,b)=>(a.nome||"").localeCompare(b.nome||""));
+  return novo;
+}
+async function editTipoConta(id, data){
+  const [atualizado] = await sbFetch(`/rest/v1/tipos_conta?id=eq.${id}`, { method:"PATCH", body:data });
+  STATE.tiposConta = STATE.tiposConta.map(c=> c.id===id ? atualizado : c).sort((a,b)=>(a.nome||"").localeCompare(b.nome||""));
+  return atualizado;
+}
+async function deleteTipoConta(id){
+  await sbFetch(`/rest/v1/tipos_conta?id=eq.${id}`, { method:"DELETE" });
+  STATE.tiposConta = STATE.tiposConta.filter(c=>c.id!==id);
+}
+
 function saldoContasInlineHTML(){
   const total = saldoTotalContas();
   return ` <span class="muted">· Saldo em contas bancárias: <b style="color:${total>=0?BRAND[600]:DANGER};">${currency(total)}</b></span>`;
@@ -870,6 +906,35 @@ function openConfirm(text, onConfirm){
   document.getElementById("confirm-ok").addEventListener("click", ()=>{ closeConfirm(); onConfirm(); });
 }
 
+/* ---- Aviso de possível lançamento duplicado (cruza data + valor) ---- */
+function encontrarPossivelDuplicata(itens, { data, valor, excludeId }){
+  if(!data || !valor) return null;
+  return itens.find(it => it.id!==excludeId && it.data===data && Math.abs(Number(it.valor)-Number(valor))<0.005) || null;
+}
+function closeAvisoDuplicata(){ const c=document.getElementById("aviso-duplicata-overlay"); if(c) c.remove(); }
+function openAvisoDuplicata(text, onConfirm){
+  closeAvisoDuplicata();
+  const div = document.createElement("div");
+  div.id = "aviso-duplicata-overlay";
+  div.className = "overlay";
+  div.style.zIndex = "80";
+  div.innerHTML = `
+    <div class="confirm-box">
+      <div style="display:flex;gap:12px;align-items:flex-start;">
+        <div style="background:${WARN_BG};color:${WARN};border-radius:999px;padding:8px;">${icon("alert",18,WARN)}</div>
+        <p style="font-size:14px;color:#44403c;margin:4px 0 0;">${esc(text)}</p>
+      </div>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">
+        <button type="button" class="btn btn-outline" id="aviso-dup-revisar">Revisar lançamento</button>
+        <button type="button" class="btn btn-primary" id="aviso-dup-continuar">Salvar mesmo assim</button>
+      </div>
+    </div>`;
+  document.body.appendChild(div);
+  div.addEventListener("mousedown", (e)=>{ if(e.target===div) closeAvisoDuplicata(); });
+  document.getElementById("aviso-dup-revisar").addEventListener("click", closeAvisoDuplicata);
+  document.getElementById("aviso-dup-continuar").addEventListener("click", ()=>{ closeAvisoDuplicata(); onConfirm(); });
+}
+
 /* ============================== Root render ============================== */
 function renderRoot(){
   const root = document.getElementById("root");
@@ -999,11 +1064,7 @@ const NAV_GROUPS = [
     {id:"fin-contas", label:"Contas a Pagar/Receber", ic:"clipboard"},
     {id:"fat-duplicatas", label:"Duplicatas a Pagar", ic:"card"},
     {id:"fin-personalizado", label:"Análise Personalizada", ic:"sparkles"},
-  ]},
-  { id:"cadastros", label:"Cadastros", ic:"folder", items:[
-    {id:"cad-cartoes", label:"Cartões", ic:"card"},
-    {id:"cad-fornecedores", label:"Fornecedores", ic:"users"},
-    {id:"cad-clientes", label:"Clientes", ic:"users"},
+    {id:"fin-cadastros", label:"Cadastros", ic:"folder"},
   ]},
   { id:"config", label:"Configurações", ic:"settings", items:[
     {id:"seguranca", label:"Segurança", ic:"lock"},
@@ -1012,15 +1073,17 @@ const NAV_GROUPS = [
   ]},
 ];
 // Cada tela unificada do módulo Financeiro (Painel Principal, Entradas, Saídas,
-// Contas e Análise Personalizada) reúne várias "contas" por trás de um menu
-// deslizante. O acesso de cada aba continua checado pelo id granular de sempre
-// (ex: "fat-entradas"), então as permissões de cada usuário não mudam.
+// Contas, Análise Personalizada e agora Cadastros) reúne várias "contas"/tipos
+// por trás de um menu deslizante. O acesso de cada aba continua checado pelo
+// id granular de sempre (ex: "fat-entradas"), então as permissões de cada
+// usuário não mudam.
 const FIN_SUBACESSOS = {
   "fin-dashboard": ["dashboard","cartoes-dashboard","vales-dashboard","fat-dashboard"],
   "fin-entradas": ["entradas","vales-lancamentos","fat-entradas"],
   "fin-saidas": ["saidas","cartoes-lancamentos","fat-saidas"],
   "fin-contas": ["contas","fat-contas"],
   "fin-personalizado": ["personalizado","fat-personalizado"],
+  "fin-cadastros": ["cad-cartoes","cad-fornecedores","cad-clientes","cad-categorias-fin","cad-tipos-conta"],
 };
 // Estrutura granular usada só no editor de permissões e nos resumos de acesso
 // (a navegação lateral agora é mais enxuta, mas quem libera o quê pra cada
@@ -1060,6 +1123,8 @@ const PERMISSOES_GRUPOS = [
       {id:"cad-cartoes", label:"Cartões"},
       {id:"cad-fornecedores", label:"Fornecedores"},
       {id:"cad-clientes", label:"Clientes"},
+      {id:"cad-categorias-fin", label:"Categoria Financeira"},
+      {id:"cad-tipos-conta", label:"Tipo de Contas"},
     ]},
   ]},
   { id:"config", label:"Configurações", ic:"settings", subgrupos:[
@@ -1244,6 +1309,15 @@ function renderFinPersonalizado(container){
     {id:"fat-personalizado", label:"Faturamento", acesso:"fat-personalizado", render:renderFatPersonalizado},
   ]);
 }
+function renderFinCadastros(container){
+  renderComAbasDeConta(container, "cadastros", [
+    {id:"cad-cartoes", label:"Cartões", acesso:"cad-cartoes", render:renderCadCartoes},
+    {id:"cad-fornecedores", label:"Fornecedores", acesso:"cad-fornecedores", render:renderCadFornecedores},
+    {id:"cad-clientes", label:"Clientes", acesso:"cad-clientes", render:renderCadClientes},
+    {id:"cad-categorias-fin", label:"Categoria Financeira", acesso:"cad-categorias-fin", render:renderCadCategoriasFinanceiras},
+    {id:"cad-tipos-conta", label:"Tipo de Contas", acesso:"cad-tipos-conta", render:renderCadTiposConta},
+  ]);
+}
 
 function renderView(){
   const c = document.getElementById("view-container");
@@ -1256,9 +1330,7 @@ function renderView(){
   else if(STATE.view==="fin-contas") renderFinContas(c);
   else if(STATE.view==="fat-duplicatas") renderFatDuplicatas(c);
   else if(STATE.view==="fin-personalizado") renderFinPersonalizado(c);
-  else if(STATE.view==="cad-cartoes") renderCadCartoes(c);
-  else if(STATE.view==="cad-fornecedores") renderCadFornecedores(c);
-  else if(STATE.view==="cad-clientes") renderCadClientes(c);
+  else if(STATE.view==="fin-cadastros") renderFinCadastros(c);
   else if(STATE.view==="seguranca") renderSeguranca(c);
   else if(STATE.view==="usuarios") renderUsuarios(c);
   else if(STATE.view==="contas-bancarias") renderContasBancarias(c);
@@ -1392,13 +1464,24 @@ function openLancamentoModal(tipo, item, onSaved){
           observacao: body.querySelector("#f-obs").value.trim(),
         };
         const btn = body.querySelector("#f-submit");
-        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
-        try{
-          if(isEdit) await editLancamento(item.id, payload);
-          else await addLancamento(payload);
-          closeModal();
-          onSaved && onSaved();
-        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar lançamento`; }
+        async function salvar(){
+          btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+          try{
+            if(isEdit) await editLancamento(item.id, payload);
+            else await addLancamento(payload);
+            closeModal();
+            onSaved && onSaved();
+          }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar lançamento`; }
+        }
+        const duplicata = encontrarPossivelDuplicata(
+          STATE.lancamentos.filter(l=>l.tipo===tipo).map(l=>({ id:l.id, data: l.data_realizada||l.data_prevista, valor:l.valor })),
+          { data, valor, excludeId: item?.id }
+        );
+        if(duplicata){
+          openAvisoDuplicata(`Já existe um lançamento de ${currency(valor)} em ${fmtDate(data)} nesta lista. Pode ser um lançamento duplicado — deseja salvar mesmo assim?`, salvar);
+        } else {
+          await salvar();
+        }
       });
     }
   });
@@ -1873,16 +1956,29 @@ function openCartaoCompraModal(onSaved){
         const portador = body.querySelector("#cf-portador").value.trim();
         if(!valorTotal || valorTotal<=0 || !descricao || !cartao || !portador) return;
         const parcelasTotal = parceladoSel.value==="sim" ? Math.max(2, parseInt(body.querySelector("#cf-nparcelas").value,10)||2) : 1;
+        const dataPrimeira = body.querySelector("#cf-data").value || todayISO();
         const btn = body.querySelector("#cf-submit");
-        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
-        try{
-          await addCartaoCompra({
-            descricao, categoria: body.querySelector("#cf-categoria").value, cartao, portador,
-            valorTotal, parcelasTotal, dataPrimeira: body.querySelector("#cf-data").value || todayISO(),
-            observacao: body.querySelector("#cf-obs").value.trim(),
-          });
-          closeModal(); onSaved && onSaved();
-        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar gasto`; }
+        async function salvar(){
+          btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+          try{
+            await addCartaoCompra({
+              descricao, categoria: body.querySelector("#cf-categoria").value, cartao, portador,
+              valorTotal, parcelasTotal, dataPrimeira,
+              observacao: body.querySelector("#cf-obs").value.trim(),
+            });
+            closeModal(); onSaved && onSaved();
+          }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar gasto`; }
+        }
+        const valorPrimeiraParcela = splitValor(valorTotal, parcelasTotal)[0];
+        const duplicata = encontrarPossivelDuplicata(
+          STATE.cartaoLancamentos.map(l=>({ id:l.id, data:l.data, valor:l.valor })),
+          { data: dataPrimeira, valor: valorPrimeiraParcela }
+        );
+        if(duplicata){
+          openAvisoDuplicata(`Já existe um gasto de ${currency(valorPrimeiraParcela)} em ${fmtDate(dataPrimeira)} lançado no cartão. Pode ser um lançamento duplicado — deseja salvar mesmo assim?`, salvar);
+        } else {
+          await salvar();
+        }
       });
     }
   });
@@ -1956,17 +2052,29 @@ function openCartaoEditModal(item, onSaved){
         const portador = body.querySelector("#ce-portador").value.trim();
         if(!valor || valor<=0 || !descricao || !cartao || !portador) return;
         const status = body.querySelector("#ce-status").value;
+        const data = body.querySelector("#ce-data").value;
         const btn = body.querySelector("#ce-submit");
-        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
-        try{
-          await editCartaoLancamento(item.id, {
-            descricao, categoria: body.querySelector("#ce-categoria").value, valor, cartao, portador,
-            status, data: body.querySelector("#ce-data").value,
-            data_pagamento: status==="realizado" ? (item.data_pagamento||todayISO()) : null,
-            observacao: body.querySelector("#ce-obs").value.trim(),
-          });
-          closeModal(); onSaved && onSaved();
-        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar`; }
+        async function salvar(){
+          btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+          try{
+            await editCartaoLancamento(item.id, {
+              descricao, categoria: body.querySelector("#ce-categoria").value, valor, cartao, portador,
+              status, data,
+              data_pagamento: status==="realizado" ? (item.data_pagamento||todayISO()) : null,
+              observacao: body.querySelector("#ce-obs").value.trim(),
+            });
+            closeModal(); onSaved && onSaved();
+          }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar`; }
+        }
+        const duplicata = encontrarPossivelDuplicata(
+          STATE.cartaoLancamentos.map(l=>({ id:l.id, data:l.data, valor:l.valor })),
+          { data, valor, excludeId: item.id }
+        );
+        if(duplicata){
+          openAvisoDuplicata(`Já existe um gasto de ${currency(valor)} em ${fmtDate(data)} lançado no cartão. Pode ser um lançamento duplicado — deseja salvar mesmo assim?`, salvar);
+        } else {
+          await salvar();
+        }
       });
     }
   });
@@ -2294,12 +2402,23 @@ function openValeModal(item, onSaved){
           observacao: body.querySelector("#v-obs").value.trim(),
         };
         const btn = body.querySelector("#v-submit");
-        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
-        try{
-          if(isEdit) await editVale(item.id, payload);
-          else await addVale(payload);
-          closeModal(); onSaved && onSaved();
-        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar vale`; }
+        async function salvar(){
+          btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+          try{
+            if(isEdit) await editVale(item.id, payload);
+            else await addVale(payload);
+            closeModal(); onSaved && onSaved();
+          }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar vale`; }
+        }
+        const duplicata = encontrarPossivelDuplicata(
+          STATE.valeLancamentos.map(l=>({ id:l.id, data:l.data, valor:l.valor })),
+          { data: payload.data, valor, excludeId: item?.id }
+        );
+        if(duplicata){
+          openAvisoDuplicata(`Já existe um vale de ${currency(valor)} em ${fmtDate(payload.data)}. Pode ser um lançamento duplicado — deseja salvar mesmo assim?`, salvar);
+        } else {
+          await salvar();
+        }
       });
     }
   });
@@ -2647,13 +2766,24 @@ function openFatLancamentoModal(tipo, item, onSaved){
           observacao: body.querySelector("#ff-obs").value.trim(),
         };
         const btn = body.querySelector("#ff-submit");
-        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
-        try{
-          if(isEdit) await editFatLancamento(item.id, payload);
-          else await addFatLancamento(payload);
-          closeModal();
-          onSaved && onSaved();
-        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar lançamento`; }
+        async function salvar(){
+          btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+          try{
+            if(isEdit) await editFatLancamento(item.id, payload);
+            else await addFatLancamento(payload);
+            closeModal();
+            onSaved && onSaved();
+          }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar lançamento`; }
+        }
+        const possivelDuplicata = encontrarPossivelDuplicata(
+          STATE.faturamentoLancamentos.filter(l=>l.tipo===tipo).map(l=>({ id:l.id, data: l.data_realizada||l.data_prevista, valor:l.valor })),
+          { data, valor, excludeId: item?.id }
+        );
+        if(possivelDuplicata){
+          openAvisoDuplicata(`Já existe um lançamento de ${currency(valor)} em ${fmtDate(data)} nesta lista de faturamento. Pode ser um lançamento duplicado — deseja salvar mesmo assim?`, salvar);
+        } else {
+          await salvar();
+        }
       });
     }
   });
@@ -3927,6 +4057,214 @@ function renderCadClientes(container){
       const item = STATE.clientes.find(cl=>cl.id===b.dataset.id);
       openConfirm(`Excluir o cliente "${item.nome}"? Essa ação não pode ser desfeita.`, async ()=>{
         try{ await deleteCliente(item.id); refresh(); }catch(err){ toast(err.message, true); }
+      });
+    }));
+  }
+  refresh();
+}
+
+/* ============================== Cadastro de Categoria Financeira ============================== */
+function statusAtivoBadge(status){
+  const ativo = status!=="inativo";
+  if(ativo) return `<span class="badge badge-ok"><span class="dot" style="background:${BRAND[500]}"></span>Ativa</span>`;
+  return `<span class="badge" style="background:#f1efe9;color:#78716c;"><span class="dot" style="background:#a8a29e"></span>Inativa</span>`;
+}
+function categoriaFinanceiraFormHTML(item){
+  const status = item?.status || "ativo";
+  return `
+    <form id="catfin-form">
+      <div style="display:grid;grid-template-columns:1fr 2fr;gap:0 14px;">
+        <label class="field"><span class="field-label">Ordem</span>
+          <input class="input" type="number" id="cff-ordem" value="${item&&item.ordem!=null?item.ordem:0}" /></label>
+        <label class="field"><span class="field-label">Categoria</span>
+          <input class="input" id="cff-categoria" value="${esc(item?item.categoria:"")}" placeholder="ex: Receitas Operacionais" required /></label>
+      </div>
+      <label class="field"><span class="field-label">Descrição</span>
+        <textarea class="input" id="cff-descricao" rows="2">${esc(item?item.descricao:"")}</textarea></label>
+      <label class="field"><span class="field-label">Status</span>
+        <select class="input" id="cff-status">
+          <option value="ativo" ${status==="ativo"?"selected":""}>Ativa</option>
+          <option value="inativo" ${status==="inativo"?"selected":""}>Inativa</option>
+        </select></label>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="cff-cancel">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="cff-submit">${icon("check",15)} Salvar categoria</button>
+      </div>
+    </form>`;
+}
+function openCategoriaFinanceiraModal(item, onSaved){
+  openModal({
+    title: item ? "Editar categoria financeira" : "Nova categoria financeira",
+    bodyHTML: categoriaFinanceiraFormHTML(item),
+    mount:(body)=>{
+      body.querySelector("#cff-cancel").addEventListener("click", closeModal);
+      body.querySelector("#catfin-form").addEventListener("submit", async (e)=>{
+        e.preventDefault();
+        const categoria = body.querySelector("#cff-categoria").value.trim();
+        if(!categoria) return;
+        const payload = {
+          ordem: parseInt(body.querySelector("#cff-ordem").value, 10) || 0,
+          categoria,
+          descricao: body.querySelector("#cff-descricao").value.trim() || null,
+          status: body.querySelector("#cff-status").value,
+        };
+        const btn = body.querySelector("#cff-submit");
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+        try{
+          if(item) await editCategoriaFinanceira(item.id, payload);
+          else await addCategoriaFinanceira(payload);
+          closeModal(); onSaved && onSaved();
+        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar categoria`; }
+      });
+    }
+  });
+}
+function renderCadCategoriasFinanceiras(container){
+  const sortState = { key:"ordem", dir:"asc" };
+  const sortExtractors = { ordem: c=>c.ordem??0, categoria: c=>c.categoria, status: c=>c.status };
+
+  function refresh(){
+    const dados = ordenarPor(STATE.categoriasFinanceiras, sortState, sortExtractors);
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+        <div>
+          <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Categoria Financeira</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.categoriasFinanceiras.length} categoria(s) cadastrada(s).</p>
+        </div>
+        <button class="btn btn-primary" id="btn-nova-catfin">${icon("plus",16)} Nova categoria</button>
+      </div>
+      <div class="card" style="overflow-x:auto;">
+        <table>
+          <thead><tr>${thSort("Ordem","ordem",sortState)}${thSort("Categoria","categoria",sortState)}<th>Descrição</th>${thSort("Status","status",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <tbody>
+            ${dados.map(c=>`
+              <tr>
+                <td style="color:#78716c;">${c.ordem??0}</td>
+                <td style="font-weight:500;color:#44403c;">${esc(c.categoria)}</td>
+                <td style="color:#a8a29e;font-size:12px;">${esc(c.descricao||"—")}</td>
+                <td>${statusAtivoBadge(c.status)}</td>
+                <td>
+                  <div style="display:flex;justify-content:flex-end;gap:2px;">
+                    <button class="icon-btn edit-catfin-btn" data-id="${c.id}">${icon("edit",15,"#78716c")}</button>
+                    <button class="icon-btn danger del-catfin-btn" data-id="${c.id}">${icon("trash",15,DANGER)}</button>
+                  </div>
+                </td>
+              </tr>`).join("") || `<tr><td colspan="5" class="empty">Nenhuma categoria financeira cadastrada ainda.</td></tr>`}
+          </tbody>
+        </table>
+      </div>`;
+
+    wireSort(container, sortState, refresh);
+    wireTopScroll(container);
+    container.querySelector("#btn-nova-catfin").addEventListener("click", ()=> openCategoriaFinanceiraModal(null, refresh));
+    container.querySelectorAll(".edit-catfin-btn").forEach(b=> b.addEventListener("click", ()=>{
+      openCategoriaFinanceiraModal(STATE.categoriasFinanceiras.find(c=>c.id===b.dataset.id), refresh);
+    }));
+    container.querySelectorAll(".del-catfin-btn").forEach(b=> b.addEventListener("click", ()=>{
+      const item = STATE.categoriasFinanceiras.find(c=>c.id===b.dataset.id);
+      openConfirm(`Excluir a categoria financeira "${item.categoria}"? Essa ação não pode ser desfeita.`, async ()=>{
+        try{ await deleteCategoriaFinanceira(item.id); refresh(); }catch(err){ toast(err.message, true); }
+      });
+    }));
+  }
+  refresh();
+}
+
+/* ============================== Cadastro de Tipo de Contas ============================== */
+function tipoContaFormHTML(item){
+  const status = item?.status || "ativo";
+  const categorias = STATE.categoriasFinanceiras;
+  return `
+    <form id="tipoconta-form">
+      <label class="field"><span class="field-label">Nome</span>
+        <input class="input" id="tc-nome" value="${esc(item?item.nome:"")}" placeholder="ex: Conta Corrente" required /></label>
+      <label class="field"><span class="field-label">Categoria Financeira</span>
+        <select class="input" id="tc-categoria">
+          <option value="">Selecione...</option>
+          ${categorias.map(c=>`<option value="${esc(c.categoria)}" ${item&&item.categoria_financeira===c.categoria?"selected":""}>${esc(c.categoria)}${c.status==="inativo"?" (inativa)":""}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field"><span class="field-label">Status</span>
+        <select class="input" id="tc-status">
+          <option value="ativo" ${status==="ativo"?"selected":""}>Ativo</option>
+          <option value="inativo" ${status==="inativo"?"selected":""}>Inativo</option>
+        </select></label>
+      <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px;">
+        <button type="button" class="btn btn-outline" id="tc-cancel">Cancelar</button>
+        <button type="submit" class="btn btn-primary" id="tc-submit">${icon("check",15)} Salvar tipo de conta</button>
+      </div>
+    </form>`;
+}
+function openTipoContaModal(item, onSaved){
+  openModal({
+    title: item ? "Editar tipo de conta" : "Novo tipo de conta",
+    bodyHTML: tipoContaFormHTML(item),
+    mount:(body)=>{
+      body.querySelector("#tc-cancel").addEventListener("click", closeModal);
+      body.querySelector("#tipoconta-form").addEventListener("submit", async (e)=>{
+        e.preventDefault();
+        const nome = body.querySelector("#tc-nome").value.trim();
+        if(!nome) return;
+        const payload = {
+          nome,
+          categoria_financeira: body.querySelector("#tc-categoria").value || null,
+          status: body.querySelector("#tc-status").value,
+        };
+        const btn = body.querySelector("#tc-submit");
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
+        try{
+          if(item) await editTipoConta(item.id, payload);
+          else await addTipoConta(payload);
+          closeModal(); onSaved && onSaved();
+        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar tipo de conta`; }
+      });
+    }
+  });
+}
+function renderCadTiposConta(container){
+  const sortState = { key:"nome", dir:"asc" };
+  const sortExtractors = { nome: c=>c.nome, categoria: c=>c.categoria_financeira, status: c=>c.status };
+
+  function refresh(){
+    const dados = ordenarPor(STATE.tiposConta, sortState, sortExtractors);
+    container.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+        <div>
+          <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Tipo de Contas</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.tiposConta.length} tipo(s) cadastrado(s).</p>
+        </div>
+        <button class="btn btn-primary" id="btn-novo-tipoconta">${icon("plus",16)} Novo tipo de conta</button>
+      </div>
+      <div class="card" style="overflow-x:auto;">
+        <table>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Categoria Financeira","categoria",sortState)}${thSort("Status","status",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <tbody>
+            ${dados.map(c=>`
+              <tr>
+                <td style="font-weight:500;color:#44403c;">${esc(c.nome)}</td>
+                <td style="color:#78716c;">${esc(c.categoria_financeira||"—")}</td>
+                <td>${statusAtivoBadge(c.status)}</td>
+                <td>
+                  <div style="display:flex;justify-content:flex-end;gap:2px;">
+                    <button class="icon-btn edit-tipoconta-btn" data-id="${c.id}">${icon("edit",15,"#78716c")}</button>
+                    <button class="icon-btn danger del-tipoconta-btn" data-id="${c.id}">${icon("trash",15,DANGER)}</button>
+                  </div>
+                </td>
+              </tr>`).join("") || `<tr><td colspan="4" class="empty">Nenhum tipo de conta cadastrado ainda.</td></tr>`}
+          </tbody>
+        </table>
+      </div>`;
+
+    wireSort(container, sortState, refresh);
+    wireTopScroll(container);
+    container.querySelector("#btn-novo-tipoconta").addEventListener("click", ()=> openTipoContaModal(null, refresh));
+    container.querySelectorAll(".edit-tipoconta-btn").forEach(b=> b.addEventListener("click", ()=>{
+      openTipoContaModal(STATE.tiposConta.find(c=>c.id===b.dataset.id), refresh);
+    }));
+    container.querySelectorAll(".del-tipoconta-btn").forEach(b=> b.addEventListener("click", ()=>{
+      const item = STATE.tiposConta.find(c=>c.id===b.dataset.id);
+      openConfirm(`Excluir o tipo de conta "${item.nome}"? Essa ação não pode ser desfeita.`, async ()=>{
+        try{ await deleteTipoConta(item.id); refresh(); }catch(err){ toast(err.message, true); }
       });
     }));
   }
