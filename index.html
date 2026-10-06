@@ -215,6 +215,7 @@ function wireBulkQuitar(rows, selecionados, {quitarFn, refresh, confirmMsg}){
   if(!btn) return;
   btn.addEventListener("click", ()=>{
     const ids = Array.from(selecionados);
+    const label = btn.textContent.trim() || "Confirmar";
     openConfirm(confirmMsg(ids.length), async ()=>{
       btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Processando...`;
       try{
@@ -222,7 +223,7 @@ function wireBulkQuitar(rows, selecionados, {quitarFn, refresh, confirmMsg}){
         selecionados.clear();
         refresh();
       }catch(err){ toast(err.message, true); btn.disabled=false; }
-    });
+    }, { label, danger:false });
   });
 }
 
@@ -886,21 +887,24 @@ function openNestedModal({title, bodyHTML, mount}){
   if(mount) mount(div.querySelector(".modal-body"));
 }
 function closeConfirm(){ const c=document.getElementById("confirm-overlay"); if(c) c.remove(); }
-function openConfirm(text, onConfirm){
+function openConfirm(text, onConfirm, opts={}){
+  const { label="Excluir", danger=true } = opts;
   closeConfirm();
   const div = document.createElement("div");
   div.id = "confirm-overlay";
   div.className = "overlay";
   div.style.zIndex = "70";
+  const iconBg = danger ? DANGER_BG : BRAND[100];
+  const iconFg = danger ? DANGER : BRAND[600];
   div.innerHTML = `
     <div class="confirm-box">
       <div style="display:flex;gap:12px;align-items:flex-start;">
-        <div style="background:${DANGER_BG};color:${DANGER};border-radius:999px;padding:8px;">${icon("alert",18,DANGER)}</div>
+        <div style="background:${iconBg};color:${iconFg};border-radius:999px;padding:8px;">${icon(danger?"alert":"check",18,iconFg)}</div>
         <p style="font-size:14px;color:#44403c;margin:4px 0 0;">${esc(text)}</p>
       </div>
       <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:18px;">
         <button class="btn btn-outline" id="confirm-cancel">Cancelar</button>
-        <button class="btn btn-danger" id="confirm-ok">Excluir</button>
+        <button class="btn ${danger?"btn-danger":"btn-primary"}" id="confirm-ok">${esc(label)}</button>
       </div>
     </div>`;
   document.body.appendChild(div);
@@ -4355,7 +4359,7 @@ function renderSeguranca(container){
               toast("2FA desativado.");
               carregar();
             }catch(err){ toast(err.message, true); }
-          });
+          }, { label:"Desativar" });
         });
       }else{
         conteudo.innerHTML = segurancaDesativadaHTML();
