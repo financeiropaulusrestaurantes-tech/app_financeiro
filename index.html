@@ -136,6 +136,98 @@ const TIPO_LABEL = { entrada:"Entradas", saida:"Saídas", cartao:"Cartões e Dé
 const catsFor = (tipo) => STATE.categorias.filter(c=>c.tipo===tipo).map(c=>c.nome);
 const catsForFat = (tipo) => catsFor("fat_"+tipo);
 
+/* ============================== Tipo de Conta × Categoria Financeira ==============================
+   Tipo de Conta = item específico (ex: ÁGUA). Categoria Financeira = grupo maior (ex: Operacional).
+   Os lançamentos guardam o NOME do tipo de conta no campo "categoria" (texto); a Categoria Financeira
+   é sempre descoberta a partir do cadastro de Tipo de Contas (nada duplicado nos lançamentos). */
+const SEM_CATFIN = "Sem categoria financeira";
+const normKey = (s) => String(s==null?"":s).normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/\s+/g," ").trim();
+let _tcMemo = { ref:null, map:null };
+function tipoContaMap(){
+  if(_tcMemo.ref !== STATE.tiposConta || !_tcMemo.map){
+    const m = new Map();
+    (STATE.tiposConta||[]).forEach(t=> m.set(normKey(t.nome), t));
+    _tcMemo = { ref:STATE.tiposConta, map:m };
+  }
+  return _tcMemo.map;
+}
+const tipoContaPorNome = (nome) => nome ? (tipoContaMap().get(normKey(nome)) || null) : null;
+const categoriaFinDoTipo = (nome) => (tipoContaPorNome(nome)||{}).categoria_financeira || null;
+const grupoDe = (l) => categoriaFinDoTipo(l && l.categoria) || SEM_CATFIN;
+const GRUPOS_RECEITA = ["Receitas Operacionais","Outras Receitas","Aportes e Empréstimos","Vales Recebidos"];
+
+/* <option>s do select de Tipo de Conta, agrupados por Categoria Financeira. */
+function tipoContaOptionsHTML(selected, { lado=null, excluir=null }={}){
+  const exclKey = excluir ? normKey(excluir) : null;
+  const tipos = (STATE.tiposConta||[]).filter(t=> (t.status!=="inativo" || normKey(t.nome)===normKey(selected)) && normKey(t.nome)!==exclKey);
+  const ordemCat = (STATE.categoriasFinanceiras||[]).map(c=>c.categoria);
+  const grupos = new Map();
+  tipos.forEach(t=>{
+    const g = (t.categoria_financeira && ordemCat.includes(t.categoria_financeira)) ? t.categoria_financeira : SEM_CATFIN;
+    if(!grupos.has(g)) grupos.set(g, []);
+    grupos.get(g).push(t);
+  });
+  let nomesGrupos = [...ordemCat.filter(g=>grupos.has(g))];
+  if(grupos.has(SEM_CATFIN)) nomesGrupos.push(SEM_CATFIN);
+  if(lado){
+    const eReceita = (g)=> GRUPOS_RECEITA.includes(g);
+    nomesGrupos = [...nomesGrupos.filter(g=> lado==="entrada" ? eReceita(g) : !eReceita(g)), ...nomesGrupos.filter(g=> lado==="entrada" ? !eReceita(g) : eReceita(g))];
+  }
+  const selKey = normKey(selected);
+  const achou = !!(selected && tipoContaPorNome(selected));
+  let html = `<option value="">Selecione...</option>`;
+  if(selected && !achou) html += `<option value="${esc(selected)}" selected>${esc(selected)} (sem cadastro em Tipo de Conta)</option>`;
+  nomesGrupos.forEach(g=>{
+    html += `<optgroup label="${esc(g)}">` + grupos.get(g).sort((a,b)=>(a.nome||"").localeCompare(b.nome||"")).map(t=>`<option value="${esc(t.nome)}" ${selKey && normKey(t.nome)===selKey?"selected":""}>${esc(t.nome)}${t.status==="inativo"?" (inativo)":""}</option>`).join("") + `</optgroup>`;
+  });
+  return html;
+}
+/* Campo completo: select + "Categoria financeira: X" automática + atalho para cadastrar novo tipo. */
+function tipoContaCampoHTML(id, selected, { lado=null, label="Tipo de Conta", required=true }={}){
+  const cat = categoriaFinDoTipo(selected);
+  return `
+    <label class="field">
+      <span class="field-label">${esc(label)}</span>
+      <select class="input" id="${id}" ${required?"required":""}>${tipoContaOptionsHTML(selected, { lado })}</select>
+      <span class="field-hint" id="${id}-catfin" style="margin-top:5px;">${catfinHintTexto(selected)}</span>
+      <button type="button" id="${id}-novo" style="border:none;background:none;font-size:11px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;padding:0;margin-top:3px;display:inline-flex;align-items:center;gap:3px;">${icon("plus",11)} Cadastrar novo tipo de conta</button>
+    </label>`;
+}
+function catfinHintTexto(nomeTipo){
+  if(!nomeTipo) return `Categoria financeira: <b>—</b> <span style="color:#a8a29e;">(preenchida automaticamente)</span>`;
+  const cat = categoriaFinDoTipo(nomeTipo);
+  return `Categoria financeira: <b style="color:${cat?BRAND[700]:WARN};">${esc(cat||SEM_CATFIN)}</b>`;
+}
+function wireTipoContaCampo(body, id, { lado=null }={}){
+  const sel = body.querySelector("#"+id);
+  const hint = body.querySelector("#"+id+"-catfin");
+  if(!sel) return;
+  const atualizar = ()=>{ hint.innerHTML = catfinHintTexto(sel.value); };
+  sel.addEventListener("change", atualizar);
+  const novo = body.querySelector("#"+id+"-novo");
+  if(novo) novo.addEventListener("click", (e)=>{
+    e.preventDefault();
+    openTipoContaModal(null, (salvo)=>{
+      sel.innerHTML = tipoContaOptionsHTML(salvo ? salvo.nome : sel.value, { lado });
+      atualizar();
+    }, { nested:true });
+  });
+}
+/* Célula de tabela: Tipo de Conta + Categoria Financeira em cinza embaixo. */
+function tipoCellHTML(nome){
+  const cat = categoriaFinDoTipo(nome);
+  return `<div style="color:#44403c;">${esc(nome||"—")}</div><div style="font-size:11px;color:${cat?"#a8a29e":WARN};">${esc(cat||SEM_CATFIN)}</div>`;
+}
+const tipoDetalheTexto = (nome) => { const c = categoriaFinDoTipo(nome); return `${nome||"—"} · ${c||SEM_CATFIN}`; };
+/* <option>s dos filtros (agrupando pela Categoria Financeira — o "grupo maior"). */
+function filtroGrupoOptionsHTML(lancamentos){
+  const usados = new Set((lancamentos||[]).map(grupoDe));
+  const ordem = (STATE.categoriasFinanceiras||[]).map(c=>c.categoria);
+  const lista = ordem.filter(g=>usados.has(g));
+  usados.forEach(g=>{ if(!lista.includes(g)) lista.push(g); });
+  return `<option value="">Todas</option>` + lista.map(g=>`<option value="${esc(g)}">${esc(g)}</option>`).join("");
+}
+
 const addMonths = (dateStr, n) => { const d = new Date(dateStr+"T00:00:00"); d.setMonth(d.getMonth()+n); return d.toISOString().slice(0,10); };
 const splitValor = (total, n) => { const cents = Math.round(total*100); const base = Math.floor(cents/n); const resto = cents - base*n; const arr=[]; for(let i=0;i<n;i++){ arr.push((base + (i<resto?1:0))/100); } return arr; };
 
@@ -622,7 +714,7 @@ async function garantirFornecedor(nome, documento){
   if(existe) return false;
   await addFornecedor({
     nome: String(nome).trim(), telefone:null, email:null, documento: documento||null,
-    categoria_padrao:null, unidade_padrao:null,
+    unidade_padrao:null,
     observacoes:"Cadastrado automaticamente ao importar planilha de títulos.",
   });
   return true;
@@ -651,7 +743,7 @@ async function garantirCliente(nome, documento){
   if(existe) return false;
   await addCliente({
     nome: String(nome).trim(), telefone:null, email:null, documento: documento||null,
-    categoria_padrao:null, unidade_padrao:null,
+    unidade_padrao:null,
     observacoes:"Cadastrado automaticamente ao importar planilha de títulos.",
   });
   return true;
@@ -743,82 +835,6 @@ async function addFatLancamentosEmLote(rows){
   // a resposta do lote poderia vir cortada mesmo com todas as linhas já
   // gravadas — recarregar garante que a lista local bata com o banco.
   await reloadFaturamentoLancamentos();
-}
-
-/* ---- Gerenciar categorias ---- */
-function openCategoriasModal(tipo, onChanged){
-  function bodyHTML(){
-    const lista = STATE.categorias.filter(c=>c.tipo===tipo).sort((a,b)=>a.nome.localeCompare(b.nome));
-    return `
-      <form id="cat-add-form" style="display:flex;gap:8px;margin-bottom:14px;">
-        <input class="input" id="cat-nova" placeholder="Nome da nova categoria" required />
-        <button type="submit" class="btn btn-primary" style="flex-shrink:0;">${icon("plus",15)} Adicionar</button>
-      </form>
-      <div id="cat-list">
-        ${lista.map(c=>`
-          <div class="list-row" data-catrow="${c.id}">
-            <span class="cat-nome" style="font-size:14px;color:#44403c;flex:1;">${esc(c.nome)}</span>
-            <div style="display:flex;gap:2px;">
-              <button class="icon-btn cat-edit-btn" data-id="${c.id}">${icon("edit",15,"#78716c")}</button>
-              <button class="icon-btn danger cat-del-btn" data-id="${c.id}">${icon("trash",15,DANGER)}</button>
-            </div>
-          </div>`).join("") || `<p class="empty">Nenhuma categoria cadastrada ainda.</p>`}
-      </div>
-      <p class="field-hint" style="margin-top:10px;">Excluir uma categoria não altera lançamentos já criados com ela — só deixa de aparecer nas opções para novos lançamentos.</p>`;
-  }
-
-  function mount(body){
-    body.querySelector("#cat-add-form").addEventListener("submit", async (e)=>{
-      e.preventDefault();
-      const input = body.querySelector("#cat-nova");
-      const nome = input.value.trim();
-      if(!nome) return;
-      try{
-        await addCategoria(tipo, nome);
-        body.innerHTML = bodyHTML(); mount(body);
-        onChanged && onChanged();
-      }catch(err){
-        toast(/duplicate|unique/i.test(err.message) ? "Essa categoria já existe." : err.message, true);
-      }
-    });
-    body.querySelectorAll(".cat-edit-btn").forEach(b=> b.addEventListener("click", ()=>{
-      const row = body.querySelector(`[data-catrow="${b.dataset.id}"]`);
-      const cat = STATE.categorias.find(c=>c.id===b.dataset.id);
-      row.innerHTML = `
-        <input class="input cat-edit-input" value="${esc(cat.nome)}" style="flex:1;" />
-        <div style="display:flex;gap:2px;">
-          <button class="icon-btn cat-save-btn">${icon("check",15,BRAND[600])}</button>
-          <button class="icon-btn cat-cancelEdit-btn">${icon("x",15,"#78716c")}</button>
-        </div>`;
-      row.querySelector(".cat-save-btn").addEventListener("click", async ()=>{
-        const novoNome = row.querySelector(".cat-edit-input").value.trim();
-        if(!novoNome) return;
-        try{
-          await editCategoria(cat.id, novoNome);
-          body.innerHTML = bodyHTML(); mount(body);
-          onChanged && onChanged();
-        }catch(err){
-          toast(/duplicate|unique/i.test(err.message) ? "Essa categoria já existe." : err.message, true);
-        }
-      });
-      row.querySelector(".cat-cancelEdit-btn").addEventListener("click", ()=>{ body.innerHTML = bodyHTML(); mount(body); });
-    }));
-    body.querySelectorAll(".cat-del-btn").forEach(b=> b.addEventListener("click", ()=>{
-      const cat = STATE.categorias.find(c=>c.id===b.dataset.id);
-      openConfirm(`Excluir a categoria "${cat.nome}"?`, async ()=>{
-        try{
-          await deleteCategoria(cat.id);
-          body.innerHTML = bodyHTML(); mount(body);
-          onChanged && onChanged();
-        }catch(err){ toast(err.message, true); }
-      });
-    }));
-  }
-
-  openNestedModal({ title:`Categorias — ${TIPO_LABEL[tipo]}`, bodyHTML: bodyHTML(), mount });
-}
-function manageCategoriasBtn(tipo){
-  return `<button type="button" id="btn-gerenciar-cat" style="border:none;background:none;font-size:11px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;padding:0;margin-top:5px;display:inline-flex;align-items:center;gap:3px;">${icon("edit",11)} Gerenciar categorias</button>`;
 }
 
 async function criarUsuario({ nome, email, senha, cargo, permissoes }){
@@ -1394,7 +1410,6 @@ function prazoBadge(l){
 
 /* ============================== Formulário de lançamento ============================== */
 function lancamentoFormHTML(tipo, item){
-  const cats = catsFor(tipo);
   const label = tipo==="entrada" ? "De quem (origem)" : "Para quem (fornecedor / destino)";
   const status = item?.status || "realizado";
   return `
@@ -1402,11 +1417,7 @@ function lancamentoFormHTML(tipo, item){
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">Valor (R$)</span>
           <input class="input" type="number" min="0" step="0.01" id="f-valor" value="${item?item.valor:""}" placeholder="0,00" required /></label>
-        <label class="field">
-          <span class="field-label">Categoria</span>
-          <select class="input" id="f-categoria">${cats.map(c=>`<option value="${esc(c)}" ${item&&item.categoria===c?"selected":""}>${esc(c)}</option>`).join("")}</select>
-          ${manageCategoriasBtn(tipo)}
-        </label>
+        ${tipoContaCampoHTML("f-categoria", item?item.categoria:"", { lado:tipo })}
       </div>
       <label class="field"><span class="field-label">${label}</span>
         <input class="input" id="f-contraparte" value="${esc(item?item.contraparte:"")}" placeholder="Nome do cliente, contrato ou fornecedor" required /></label>
@@ -1444,15 +1455,7 @@ function openLancamentoModal(tipo, item, onSaved){
         lbl.textContent = statusSel.value==="realizado" ? "Data de realização" : "Data prevista";
       });
       body.querySelector("#f-cancel").addEventListener("click", closeModal);
-      const gerenciarBtn = body.querySelector("#btn-gerenciar-cat");
-      if(gerenciarBtn) gerenciarBtn.addEventListener("click", (e)=>{
-        e.preventDefault();
-        openCategoriasModal(tipo, ()=>{
-          const sel = body.querySelector("#f-categoria");
-          const atual = sel.value;
-          sel.innerHTML = catsFor(tipo).map(c=>`<option value="${esc(c)}" ${c===atual?"selected":""}>${esc(c)}</option>`).join("");
-        });
-      });
+      wireTipoContaCampo(body, "f-categoria", { lado:tipo });
       body.querySelector("#lanc-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const valor = parseFloat(body.querySelector("#f-valor").value);
@@ -1505,7 +1508,7 @@ function lancamentoDetalheHTML(l){
         ${badge(l.status)}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campoDetalheFat("Categoria", esc(l.categoria||"—"))}
+        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria)))}
         ${campoDetalheFat("Unidade", esc(l.unidade||"—"))}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
@@ -1538,7 +1541,6 @@ function openLancamentoDetalheModal(l, onEdited){
 }
 function renderLancamentosView(container, tipo){
   const isEntrada = tipo==="entrada";
-  const categorias = catsFor(tipo);
   const contraLabel = isEntrada ? "Origem" : "Destino";
   const unidades = Array.from(new Set(STATE.lancamentos.map(l=>l.unidade))).sort();
 
@@ -1574,8 +1576,8 @@ function renderLancamentosView(container, tipo){
       <div><span class="field-label">Até</span><input class="input" type="date" id="fl-ate" /></div>
       <div><span class="field-label">Unidade</span>
         <select class="input" id="fl-unidade"><option value="">Todas</option>${unidades.map(u=>`<option value="${esc(u)}">${esc(u)}</option>`).join("")}</select></div>
-      <div><span class="field-label">Categoria</span>
-        <select class="input" id="fl-categoria"><option value="">Todas</option>${categorias.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select></div>
+      <div><span class="field-label">Categoria Financeira</span>
+        <select class="input" id="fl-categoria">${filtroGrupoOptionsHTML(STATE.lancamentos.filter(l=>l.tipo===tipo))}</select></div>
       <div><span class="field-label">Status</span>
         <select class="input" id="fl-status"><option value="">Todos</option><option value="realizado">Realizado</option><option value="previsto">Previsto</option></select></div>
     </div>
@@ -1588,7 +1590,7 @@ function renderLancamentosView(container, tipo){
       if(filters.de && dataRef < filters.de) return false;
       if(filters.ate && dataRef > filters.ate) return false;
       if(filters.unidade && l.unidade!==filters.unidade) return false;
-      if(filters.categoria && l.categoria!==filters.categoria) return false;
+      if(filters.categoria && grupoDe(l)!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
     });
@@ -1605,7 +1607,7 @@ function renderLancamentosView(container, tipo){
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
-            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
+            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
             ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Observações","observacao",sortState)}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
@@ -1614,7 +1616,7 @@ function renderLancamentosView(container, tipo){
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
-                <td style="color:#57534e;">${esc(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria)}</td>
                 <td style="font-weight:500;color:#44403c;">${esc(l.contraparte)}</td>
                 <td style="color:#78716c;">${esc(l.unidade)}</td>
                 <td style="text-align:right;font-weight:600;color:${isEntrada?BRAND[600]:DANGER};">${currency(l.valor)}</td>
@@ -1717,7 +1719,7 @@ function renderDashboard(container){
     const previstoEntradas = STATE.lancamentos.filter(l=>l.tipo==="entrada" && noPeriodo(l)).reduce((s,l)=>s+l.valor,0);
     const previstoSaidas = STATE.lancamentos.filter(l=>l.tipo==="saida" && noPeriodo(l)).reduce((s,l)=>s+l.valor,0);
 
-    const porCategoria = {}; saidasR.forEach(l=>{ porCategoria[l.categoria]=(porCategoria[l.categoria]||0)+l.valor; });
+    const porCategoria = {}; saidasR.forEach(l=>{ porCategoria[grupoDe(l)]=(porCategoria[grupoDe(l)]||0)+l.valor; });
     const topCategorias = Object.entries(porCategoria).sort((a,b)=>b[1]-a[1]).slice(0,5);
     const porUnidade = {}; entradasR.forEach(l=>{ porUnidade[l.unidade]=(porUnidade[l.unidade]||0)+l.valor; });
     const topUnidades = Object.entries(porUnidade).sort((a,b)=>b[1]-a[1]).slice(0,5);
@@ -1747,7 +1749,7 @@ function renderDashboard(container){
           <canvas id="chart-fluxo" height="200"></canvas>
         </div>
         <div class="card" style="padding:16px;">
-          <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Categorias que mais consumiram</h3>
+          <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Categorias financeiras que mais consumiram</h3>
           ${topCategorias.length ? `<canvas id="chart-cat" height="200"></canvas>` : `<p class="empty">Sem saídas realizadas no período.</p>`}
         </div>
         <div class="card" style="padding:16px;">
@@ -1811,9 +1813,9 @@ function renderPersonalizado(container){
   let valorSel = "";
 
   function build(){
-    const set = new Set(); STATE.lancamentos.forEach(l=> set.add(modo==="categoria"?l.categoria:l.contraparte));
+    const set = new Set(); STATE.lancamentos.forEach(l=> set.add(modo==="categoria"?grupoDe(l):l.contraparte));
     const opcoes = Array.from(set).sort();
-    const filtrados = valorSel ? STATE.lancamentos.filter(l=> (modo==="categoria"?l.categoria:l.contraparte)===valorSel) : [];
+    const filtrados = valorSel ? STATE.lancamentos.filter(l=> (modo==="categoria"?grupoDe(l):l.contraparte)===valorSel) : [];
     const entradas = filtrados.filter(l=>l.tipo==="entrada"&&l.status==="realizado").reduce((s,l)=>s+l.valor,0);
     const saidas = filtrados.filter(l=>l.tipo==="saida"&&l.status==="realizado").reduce((s,l)=>s+l.valor,0);
 
@@ -1823,15 +1825,15 @@ function renderPersonalizado(container){
 
     container.innerHTML = `
       <h2 class="serif" style="margin:0 0 4px;font-size:24px;color:${BRAND[800]};">Análise Personalizada</h2>
-      <p class="muted" style="margin:0 0 18px;font-size:13px;">Filtre por categoria ou por cliente/fornecedor específico para ver um recorte dedicado.</p>
+      <p class="muted" style="margin:0 0 18px;font-size:13px;">Filtre por categoria financeira ou por cliente/fornecedor específico para ver um recorte dedicado.</p>
       <div class="card" style="padding:14px;margin-bottom:18px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">
         <div><span class="field-label">Analisar por</span>
-          <select class="input" id="pz-modo" style="width:auto;"><option value="categoria" ${modo==="categoria"?"selected":""}>Categoria</option><option value="contraparte" ${modo==="contraparte"?"selected":""}>Cliente / Fornecedor</option></select></div>
-        <div style="flex:1;min-width:220px;"><span class="field-label">${modo==="categoria"?"Categoria":"Nome"}</span>
+          <select class="input" id="pz-modo" style="width:auto;"><option value="categoria" ${modo==="categoria"?"selected":""}>Categoria Financeira</option><option value="contraparte" ${modo==="contraparte"?"selected":""}>Cliente / Fornecedor</option></select></div>
+        <div style="flex:1;min-width:220px;"><span class="field-label">${modo==="categoria"?"Categoria Financeira":"Nome"}</span>
           <select class="input" id="pz-valor"><option value="">Selecione...</option>${opcoes.map(o=>`<option value="${esc(o)}" ${o===valorSel?"selected":""}>${esc(o)}</option>`).join("")}</select></div>
       </div>
       <div id="pz-results">
-        ${!valorSel ? `<div class="card empty" style="border-style:dashed;padding:60px 10px;">Selecione uma categoria ou um cliente/fornecedor acima para gerar a análise.</div>` : `
+        ${!valorSel ? `<div class="card empty" style="border-style:dashed;padding:60px 10px;">Selecione uma categoria financeira ou um cliente/fornecedor acima para gerar a análise.</div>` : `
         <div class="grid-4" style="margin-bottom:16px;">
           ${statCard("Total recebido", currency(entradas), "down", BRAND[100], BRAND[600])}
           ${statCard("Total gasto", currency(saidas), "up", DANGER_BG, DANGER)}
@@ -1843,10 +1845,10 @@ function renderPersonalizado(container){
           ${serieKeys.length ? `<canvas id="chart-pz" height="180"></canvas>` : `<p class="empty">Sem lançamentos realizados para esse recorte.</p>`}
         </div>
         <div class="card" style="overflow-x:auto;">
-          <table><thead><tr><th>Data</th><th>Tipo</th><th>Categoria</th><th>Contraparte</th><th>Unidade</th><th style="text-align:right;">Valor</th></tr></thead>
+          <table><thead><tr><th>Data</th><th>Tipo</th><th>Tipo de Conta</th><th>Contraparte</th><th>Unidade</th><th style="text-align:right;">Valor</th></tr></thead>
           <tbody>${filtrados.sort((a,b)=>(b.data_realizada||b.data_prevista).localeCompare(a.data_realizada||a.data_prevista)).map(l=>`
             <tr><td>${fmtDate(l.data_realizada||l.data_prevista)}</td><td>${l.tipo==="entrada"?"Entrada":"Saída"}</td>
-            <td style="color:#78716c;">${esc(l.categoria)}</td><td style="font-weight:500;">${esc(l.contraparte)}</td><td style="color:#78716c;">${esc(l.unidade)}</td>
+            <td>${tipoCellHTML(l.categoria)}</td><td style="font-weight:500;">${esc(l.contraparte)}</td><td style="color:#78716c;">${esc(l.unidade)}</td>
             <td style="text-align:right;font-weight:600;color:${l.tipo==="entrada"?BRAND[600]:DANGER};">${currency(l.valor)}</td></tr>`).join("")}</tbody></table>
         </div>`}
       </div>`;
@@ -1883,11 +1885,7 @@ function cartaoCompraFormHTML(){
       <label class="field"><span class="field-label">Descrição (estabelecimento / compra)</span>
         <input class="input" id="cf-descricao" placeholder="ex: Supermercado Extra" required /></label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        <label class="field">
-          <span class="field-label">Categoria</span>
-          <select class="input" id="cf-categoria">${catsFor("cartao").map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
-          ${manageCategoriasBtn("cartao")}
-        </label>
+        ${tipoContaCampoHTML("cf-categoria", "")}
         <label class="field"><span class="field-label">Valor total (R$)</span>
           <input class="input" type="number" min="0" step="0.01" id="cf-valor" placeholder="0,00" required /></label>
       </div>
@@ -1935,15 +1933,7 @@ function openCartaoCompraModal(onSaved){
         dataLabel.textContent = sim ? "Data da 1ª parcela" : "Data da compra";
       });
       body.querySelector("#cf-cancel").addEventListener("click", closeModal);
-      const gerenciarBtnCf = body.querySelector("#btn-gerenciar-cat");
-      if(gerenciarBtnCf) gerenciarBtnCf.addEventListener("click", (e)=>{
-        e.preventDefault();
-        openCategoriasModal("cartao", ()=>{
-          const sel = body.querySelector("#cf-categoria");
-          const atual = sel.value;
-          sel.innerHTML = catsFor("cartao").map(c=>`<option value="${esc(c)}" ${c===atual?"selected":""}>${esc(c)}</option>`).join("");
-        });
-      });
+      wireTipoContaCampo(body, "cf-categoria");
       const cadastrarCartaoBtnCf = body.querySelector("#btn-cadastrar-cartao-inline");
       if(cadastrarCartaoBtnCf) cadastrarCartaoBtnCf.addEventListener("click", (e)=>{
         e.preventDefault();
@@ -1993,11 +1983,7 @@ function cartaoEditFormHTML(item){
       ${item.parcelas_total>1 ? `<p class="field-hint" style="margin-top:-4px;">Parcela ${item.parcela_num} de ${item.parcelas_total} — o número de parcelas não pode ser alterado aqui.</p>` : ""}
       <label class="field"><span class="field-label">Descrição</span><input class="input" id="ce-descricao" value="${esc(item.descricao)}" required /></label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        <label class="field">
-          <span class="field-label">Categoria</span>
-          <select class="input" id="ce-categoria">${catsFor("cartao").map(c=>`<option value="${esc(c)}" ${item.categoria===c?"selected":""}>${esc(c)}</option>`).join("")}</select>
-          ${manageCategoriasBtn("cartao")}
-        </label>
+        ${tipoContaCampoHTML("ce-categoria", item.categoria)}
         <label class="field"><span class="field-label">Valor desta parcela (R$)</span>
           <input class="input" type="number" min="0" step="0.01" id="ce-valor" value="${item.valor}" required /></label>
       </div>
@@ -2031,15 +2017,7 @@ function openCartaoEditModal(item, onSaved){
     bodyHTML: cartaoEditFormHTML(item),
     mount:(body)=>{
       body.querySelector("#ce-cancel").addEventListener("click", closeModal);
-      const gerenciarBtnCe = body.querySelector("#btn-gerenciar-cat");
-      if(gerenciarBtnCe) gerenciarBtnCe.addEventListener("click", (e)=>{
-        e.preventDefault();
-        openCategoriasModal("cartao", ()=>{
-          const sel = body.querySelector("#ce-categoria");
-          const atual = sel.value;
-          sel.innerHTML = catsFor("cartao").map(c=>`<option value="${esc(c)}" ${c===atual?"selected":""}>${esc(c)}</option>`).join("");
-        });
-      });
+      wireTipoContaCampo(body, "ce-categoria");
       const cadastrarCartaoBtnCe = body.querySelector("#btn-cadastrar-cartao-inline");
       if(cadastrarCartaoBtnCe) cadastrarCartaoBtnCe.addEventListener("click", (e)=>{
         e.preventDefault();
@@ -2095,7 +2073,7 @@ function cartaoLancamentoDetalheHTML(l){
         ${cartaoBadge(l.status)}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campoDetalheFat("Categoria", esc(l.categoria||"—"))}
+        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria)))}
         ${campoDetalheFat("Cartão", esc(l.cartao||"—"))}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
@@ -2164,8 +2142,8 @@ function renderCartoesLancamentos(container){
       <div><span class="field-label">Até</span><input class="input" type="date" id="cfl-ate" /></div>
       <div><span class="field-label">Cartão</span>
         <select class="input" id="cfl-cartao"><option value="">Todos</option>${cartoes.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select></div>
-      <div><span class="field-label">Categoria</span>
-        <select class="input" id="cfl-categoria"><option value="">Todas</option>${catsFor("cartao").map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select></div>
+      <div><span class="field-label">Categoria Financeira</span>
+        <select class="input" id="cfl-categoria">${filtroGrupoOptionsHTML(STATE.cartaoLancamentos)}</select></div>
       <div><span class="field-label">Status</span>
         <select class="input" id="cfl-status"><option value="">Todos</option><option value="realizado">Pago</option><option value="previsto">Em aberto</option></select></div>
     </div>
@@ -2177,7 +2155,7 @@ function renderCartoesLancamentos(container){
       if(filters.de && l.data < filters.de) return false;
       if(filters.ate && l.data > filters.ate) return false;
       if(filters.cartao && l.cartao!==filters.cartao) return false;
-      if(filters.categoria && l.categoria!==filters.categoria) return false;
+      if(filters.categoria && grupoDe(l)!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
     });
@@ -2194,7 +2172,7 @@ function renderCartoesLancamentos(container){
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
-            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Cartão","cartao",sortState)}${thSort("Portador","portador",sortState)}<th>Parcela</th>
+            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Cartão","cartao",sortState)}${thSort("Portador","portador",sortState)}<th>Parcela</th>
             ${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
@@ -2203,7 +2181,7 @@ function renderCartoesLancamentos(container){
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${cartaoBadge(l.status)}</td>
-                <td style="color:#57534e;">${esc(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria)}</td>
                 <td style="font-weight:500;color:#44403c;">${esc(l.descricao)}</td>
                 <td style="color:#78716c;">${esc(l.cartao)}</td>
                 <td style="color:#78716c;">${esc(l.portador)}</td>
@@ -2260,7 +2238,7 @@ function renderCartoesDashboard(container){
     const totalPeriodo = doPeriodo.reduce((s,l)=>s+l.valor,0);
     const emAberto = totalPeriodo - totalPago;
 
-    const porCategoria = {}; pagos.forEach(l=>{ porCategoria[l.categoria]=(porCategoria[l.categoria]||0)+l.valor; });
+    const porCategoria = {}; pagos.forEach(l=>{ porCategoria[grupoDe(l)]=(porCategoria[grupoDe(l)]||0)+l.valor; });
     const topCategorias = Object.entries(porCategoria).sort((a,b)=>b[1]-a[1]).slice(0,5);
     const porCartao = {}; pagos.forEach(l=>{ porCartao[l.cartao]=(porCartao[l.cartao]||0)+l.valor; });
     const topCartoes = Object.entries(porCartao).sort((a,b)=>b[1]-a[1]).slice(0,5);
@@ -2283,13 +2261,13 @@ function renderCartoesDashboard(container){
       <div class="grid-4" style="margin-bottom:16px;">
         ${statCard("Gasto pago no período", currency(totalPago), "up", DANGER_BG, DANGER)}
         ${statCard("Em aberto no período", currency(emAberto), "clipboard", WARN_BG, WARN)}
-        ${statCard("Maior categoria", maiorCategoria, "sparkles", BRAND[100], BRAND[600])}
+        ${statCard("Maior categoria financeira", maiorCategoria, "sparkles", BRAND[100], BRAND[600])}
         ${statCard("Cartão mais usado", cartaoMaisUsado, "card", BRAND[100], BRAND[600])}
       </div>
 
       <div class="grid-2" style="margin-bottom:16px;">
         <div class="card" style="padding:16px;">
-          <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Categorias que mais gastaram</h3>
+          <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Categorias financeiras que mais gastaram</h3>
           ${topCategorias.length ? `<canvas id="chart-cartao-cat" height="200"></canvas>` : `<p class="empty">Sem gastos pagos no período.</p>`}
         </div>
         <div class="card" style="padding:16px;">
@@ -2343,11 +2321,7 @@ function valeFormHTML(item){
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">Valor (R$)</span>
           <input class="input" type="number" min="0" step="0.01" id="v-valor" value="${item?item.valor:""}" placeholder="0,00" required /></label>
-        <label class="field">
-          <span class="field-label">Categoria</span>
-          <select class="input" id="v-categoria">${catsFor("vale").map(c=>`<option value="${esc(c)}" ${item&&item.categoria===c?"selected":""}>${esc(c)}</option>`).join("")}</select>
-          ${manageCategoriasBtn("vale")}
-        </label>
+        ${tipoContaCampoHTML("v-categoria", item?item.categoria:"", { lado:"entrada" })}
       </div>
       <label class="field"><span class="field-label">Descrição (motivo / cliente)</span>
         <input class="input" id="v-descricao" value="${esc(item?item.descricao:"")}" placeholder="ex: Vale-refeição do mês" required /></label>
@@ -2384,15 +2358,7 @@ function openValeModal(item, onSaved){
     bodyHTML: valeFormHTML(item),
     mount:(body)=>{
       body.querySelector("#v-cancel").addEventListener("click", closeModal);
-      const gerenciarBtn = body.querySelector("#btn-gerenciar-cat");
-      if(gerenciarBtn) gerenciarBtn.addEventListener("click", (e)=>{
-        e.preventDefault();
-        openCategoriasModal("vale", ()=>{
-          const sel = body.querySelector("#v-categoria");
-          const atual = sel.value;
-          sel.innerHTML = catsFor("vale").map(c=>`<option value="${esc(c)}" ${c===atual?"selected":""}>${esc(c)}</option>`).join("");
-        });
-      });
+      wireTipoContaCampo(body, "v-categoria", { lado:"entrada" });
       body.querySelector("#vale-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const valor = parseFloat(body.querySelector("#v-valor").value);
@@ -2438,7 +2404,7 @@ function valeDetalheHTML(l){
         ${valeBadge(l.status)}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campoDetalheFat("Categoria", esc(l.categoria||"—"))}
+        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria)))}
         ${campoDetalheFat("Origem / Emissor", esc(l.origem||"—"))}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
@@ -2505,8 +2471,8 @@ function renderValesLancamentos(container){
       <div><span class="field-label">Até</span><input class="input" type="date" id="vfl-ate" /></div>
       <div><span class="field-label">Unidade</span>
         <select class="input" id="vfl-unidade"><option value="">Todas</option>${unidades.map(u=>`<option value="${esc(u)}">${esc(u)}</option>`).join("")}</select></div>
-      <div><span class="field-label">Categoria</span>
-        <select class="input" id="vfl-categoria"><option value="">Todas</option>${catsFor("vale").map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select></div>
+      <div><span class="field-label">Categoria Financeira</span>
+        <select class="input" id="vfl-categoria">${filtroGrupoOptionsHTML(STATE.valeLancamentos)}</select></div>
       <div><span class="field-label">Status</span>
         <select class="input" id="vfl-status"><option value="">Todos</option><option value="realizado">Recebido</option><option value="previsto">A receber</option></select></div>
     </div>
@@ -2518,7 +2484,7 @@ function renderValesLancamentos(container){
       if(filters.de && l.data < filters.de) return false;
       if(filters.ate && l.data > filters.ate) return false;
       if(filters.unidade && l.unidade!==filters.unidade) return false;
-      if(filters.categoria && l.categoria!==filters.categoria) return false;
+      if(filters.categoria && grupoDe(l)!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
     });
@@ -2535,7 +2501,7 @@ function renderValesLancamentos(container){
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
-            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Origem","origem",sortState)}${thSort("Unidade","unidade",sortState)}
+            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort("Descrição","descricao",sortState)}${thSort("Origem","origem",sortState)}${thSort("Unidade","unidade",sortState)}
             ${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
@@ -2544,7 +2510,7 @@ function renderValesLancamentos(container){
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${valeBadge(l.status)}</td>
-                <td style="color:#57534e;">${esc(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria)}</td>
                 <td style="font-weight:500;color:#44403c;">${esc(l.descricao)}</td>
                 <td style="color:#78716c;">${esc(l.origem)}</td>
                 <td style="color:#78716c;">${esc(l.unidade)}</td>
@@ -2599,7 +2565,7 @@ function renderValesDashboard(container){
     const totalPeriodo = doPeriodo.reduce((s,l)=>s+l.valor,0);
     const aReceber = totalPeriodo - totalRecebido;
 
-    const porCategoria = {}; recebidos.forEach(l=>{ porCategoria[l.categoria]=(porCategoria[l.categoria]||0)+l.valor; });
+    const porCategoria = {}; recebidos.forEach(l=>{ porCategoria[grupoDe(l)]=(porCategoria[grupoDe(l)]||0)+l.valor; });
     const topCategorias = Object.entries(porCategoria).sort((a,b)=>b[1]-a[1]).slice(0,5);
     const porOrigem = {}; recebidos.forEach(l=>{ porOrigem[l.origem]=(porOrigem[l.origem]||0)+l.valor; });
     const topOrigens = Object.entries(porOrigem).sort((a,b)=>b[1]-a[1]).slice(0,5);
@@ -2622,13 +2588,13 @@ function renderValesDashboard(container){
       <div class="grid-4" style="margin-bottom:16px;">
         ${statCard("Recebido no período", currency(totalRecebido), "down", BRAND[100], BRAND[600])}
         ${statCard("A receber no período", currency(aReceber), "clipboard", WARN_BG, WARN)}
-        ${statCard("Maior categoria", maiorCategoria, "sparkles", BRAND[100], BRAND[600])}
+        ${statCard("Maior categoria financeira", maiorCategoria, "sparkles", BRAND[100], BRAND[600])}
         ${statCard("Origem principal", origemPrincipal, "folder", BRAND[100], BRAND[600])}
       </div>
 
       <div class="grid-2" style="margin-bottom:16px;">
         <div class="card" style="padding:16px;">
-          <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Categorias que mais receberam</h3>
+          <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Categorias financeiras que mais receberam</h3>
           ${topCategorias.length ? `<canvas id="chart-vale-cat" height="200"></canvas>` : `<p class="empty">Sem vales recebidos no período.</p>`}
         </div>
         <div class="card" style="padding:16px;">
@@ -2670,7 +2636,6 @@ function renderValesDashboard(container){
 
 /* ============================== Faturamentos (clone da Carteira + Duplicatas) ============================== */
 function fatLancamentoFormHTML(tipo, item){
-  const cats = catsForFat(tipo);
   const label = tipo==="entrada" ? "De quem (origem)" : "Para quem (fornecedor / destino)";
   const status = item?.status || "realizado";
   const isDuplicata = !!(item && item.duplicata);
@@ -2679,11 +2644,7 @@ function fatLancamentoFormHTML(tipo, item){
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">Valor (R$)</span>
           <input class="input" type="number" min="0" step="0.01" id="ff-valor" value="${item?item.valor:""}" placeholder="0,00" required /></label>
-        <label class="field">
-          <span class="field-label">Categoria</span>
-          <select class="input" id="ff-categoria">${cats.map(c=>`<option value="${esc(c)}" ${item&&item.categoria===c?"selected":""}>${esc(c)}</option>`).join("")}</select>
-          ${manageCategoriasBtn("fat_"+tipo)}
-        </label>
+        ${tipoContaCampoHTML("ff-categoria", item?item.categoria:"", { lado:tipo })}
       </div>
       <label class="field"><span class="field-label">${label}</span>
         <input class="input" id="ff-contraparte" value="${esc(item?item.contraparte:"")}" placeholder="Nome do cliente, contrato ou fornecedor" required /></label>
@@ -2740,15 +2701,7 @@ function openFatLancamentoModal(tipo, item, onSaved){
       if(dupCheck) dupCheck.addEventListener("change", ()=>{
         body.querySelector("#ff-numero-wrap").style.display = dupCheck.checked ? "block" : "none";
       });
-      const gerenciarBtn = body.querySelector("#btn-gerenciar-cat");
-      if(gerenciarBtn) gerenciarBtn.addEventListener("click", (e)=>{
-        e.preventDefault();
-        openCategoriasModal("fat_"+tipo, ()=>{
-          const sel = body.querySelector("#ff-categoria");
-          const atual = sel.value;
-          sel.innerHTML = catsForFat(tipo).map(c=>`<option value="${esc(c)}" ${c===atual?"selected":""}>${esc(c)}</option>`).join("");
-        });
-      });
+      wireTipoContaCampo(body, "ff-categoria", { lado:tipo });
       body.querySelector("#fat-lanc-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const valor = parseFloat(body.querySelector("#ff-valor").value);
@@ -2794,7 +2747,6 @@ function openFatLancamentoModal(tipo, item, onSaved){
 }
 function renderFatLancamentosView(container, tipo){
   const isEntrada = tipo==="entrada";
-  const categorias = catsForFat(tipo);
   const contraLabel = isEntrada ? "Origem" : "Destino";
   const unidades = Array.from(new Set(STATE.faturamentoLancamentos.map(l=>l.unidade))).sort();
 
@@ -2835,8 +2787,8 @@ function renderFatLancamentosView(container, tipo){
       <div><span class="field-label">Até</span><input class="input" type="date" id="ffl-ate" /></div>
       <div><span class="field-label">Unidade</span>
         <select class="input" id="ffl-unidade"><option value="">Todas</option>${unidades.map(u=>`<option value="${esc(u)}">${esc(u)}</option>`).join("")}</select></div>
-      <div><span class="field-label">Categoria</span>
-        <select class="input" id="ffl-categoria"><option value="">Todas</option>${categorias.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select></div>
+      <div><span class="field-label">Categoria Financeira</span>
+        <select class="input" id="ffl-categoria">${filtroGrupoOptionsHTML(STATE.faturamentoLancamentos.filter(l=>l.tipo===tipo))}</select></div>
       <div><span class="field-label">Status</span>
         <select class="input" id="ffl-status"><option value="">Todos</option><option value="realizado">Realizado</option><option value="previsto">Previsto</option></select></div>
     </div>
@@ -2849,7 +2801,7 @@ function renderFatLancamentosView(container, tipo){
       if(filters.de && dataRef < filters.de) return false;
       if(filters.ate && dataRef > filters.ate) return false;
       if(filters.unidade && l.unidade!==filters.unidade) return false;
-      if(filters.categoria && l.categoria!==filters.categoria) return false;
+      if(filters.categoria && grupoDe(l)!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
     });
@@ -2869,7 +2821,7 @@ function renderFatLancamentosView(container, tipo){
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
-            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Categoria","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
+            ${thCheckAll()}${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort(contraLabel,"contraparte",sortState)}${thSort("Unidade","unidade",sortState)}
             ${isEntrada ? `${thSort("Vencimento","vencimento",sortState)}<th>Prazo</th>` : ""}
             ${!isEntrada ? `${thSort("Duplicata","duplicata",sortState)}` : ""}
             ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Observações","observacao",sortState)}<th style="text-align:right;">Ações</th>
@@ -2880,7 +2832,7 @@ function renderFatLancamentosView(container, tipo){
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
-                <td style="color:#57534e;">${esc(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria)}</td>
                 <td style="font-weight:500;color:#44403c;">${esc(l.contraparte)}</td>
                 <td style="color:#78716c;">${esc(l.unidade)}</td>
                 ${isEntrada ? `<td style="white-space:nowrap;color:#78716c;">${l.data_vencimento?fmtDate(l.data_vencimento):"—"}</td><td>${prazoBadge(l)}</td>` : ""}
@@ -2934,7 +2886,6 @@ function renderFatContas(container){
   function build(){
     const todas = STATE.faturamentoLancamentos;
     const unidades = Array.from(new Set(todas.map(l=>l.unidade))).sort();
-    const categorias = Array.from(new Set(todas.map(l=>l.categoria))).sort();
 
     container.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -2947,15 +2898,15 @@ function renderFatContas(container){
         <div><span class="field-label">Buscar</span>
           <div style="position:relative;">
             <span style="position:absolute;left:9px;top:50%;transform:translateY(-50%);color:#a8a29e;">${icon("search",14)}</span>
-            <input class="input" style="padding-left:30px;" id="ctf-busca" placeholder="Contraparte ou categoria" />
+            <input class="input" style="padding-left:30px;" id="ctf-busca" placeholder="Contraparte ou tipo de conta" />
           </div>
         </div>
         <div><span class="field-label">Vencimento de</span><input class="input" type="date" id="ctf-de" /></div>
         <div><span class="field-label">Vencimento até</span><input class="input" type="date" id="ctf-ate" /></div>
         <div><span class="field-label">Unidade</span>
           <select class="input" id="ctf-unidade"><option value="">Todas</option>${unidades.map(u=>`<option value="${esc(u)}">${esc(u)}</option>`).join("")}</select></div>
-        <div><span class="field-label">Categoria</span>
-          <select class="input" id="ctf-categoria"><option value="">Todas</option>${categorias.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select></div>
+        <div><span class="field-label">Categoria Financeira</span>
+          <select class="input" id="ctf-categoria">${filtroGrupoOptionsHTML(todas)}</select></div>
         <div><span class="field-label">Status</span>
           <select class="input" id="ctf-status"><option value="previsto">Em aberto</option><option value="realizado">Já quitado</option><option value="">Todos</option></select></div>
       </div>
@@ -2972,11 +2923,11 @@ function renderFatContas(container){
   }
 
   function passaFiltros(l){
-    if(filters.busca){ const alvo = `${l.contraparte} ${l.categoria}`.toLowerCase(); if(!alvo.includes(filters.busca.toLowerCase())) return false; }
+    if(filters.busca){ const alvo = `${l.contraparte} ${l.categoria} ${grupoDe(l)}`.toLowerCase(); if(!alvo.includes(filters.busca.toLowerCase())) return false; }
     if(filters.de && l.data_prevista < filters.de) return false;
     if(filters.ate && l.data_prevista > filters.ate) return false;
     if(filters.unidade && l.unidade!==filters.unidade) return false;
-    if(filters.categoria && l.categoria!==filters.categoria) return false;
+    if(filters.categoria && grupoDe(l)!==filters.categoria) return false;
     if(filters.status && l.status!==filters.status) return false;
     return true;
   }
@@ -3124,7 +3075,6 @@ function extrairTitulosDaPlanilha(rows, tipo){
   return { ok, erros };
 }
 function importarTitulosFormHTML(tipo){
-  const categorias = catsForFat(tipo);
   const unidades = Array.from(new Set(STATE.faturamentoLancamentos.map(l=>l.unidade))).sort();
   return `
     <form id="import-form">
@@ -3134,11 +3084,7 @@ function importarTitulosFormHTML(tipo){
       <label class="field"><span class="field-label">Arquivo (.xlsx)</span>
         <input class="input" type="file" id="imp-arquivo" accept=".xlsx,.xls" required /></label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        <label class="field">
-          <span class="field-label">Categoria (aplicada a todos)</span>
-          <select class="input" id="imp-categoria">${categorias.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select>
-          ${manageCategoriasBtn("fat_"+tipo)}
-        </label>
+        ${tipoContaCampoHTML("imp-categoria", "", { lado:tipo, label:"Tipo de Conta (aplicado a todos)" })}
         <label class="field"><span class="field-label">Unidade (aplicada a todos)</span>
           <input class="input" id="imp-unidade" list="imp-unidades-list" placeholder="ex: Unidade Centro" required />
           <datalist id="imp-unidades-list">${unidades.map(u=>`<option value="${esc(u)}">`).join("")}</datalist>
@@ -3209,15 +3155,7 @@ function openImportarTitulosModal(tipo, onImported){
       const preview = body.querySelector("#imp-preview");
       const submitBtn = body.querySelector("#imp-submit");
       body.querySelector("#imp-cancel").addEventListener("click", closeModal);
-      const gerenciarBtnImp = body.querySelector("#btn-gerenciar-cat");
-      if(gerenciarBtnImp) gerenciarBtnImp.addEventListener("click", (e)=>{
-        e.preventDefault();
-        openCategoriasModal("fat_"+tipo, ()=>{
-          const sel = body.querySelector("#imp-categoria");
-          const atual = sel.value;
-          sel.innerHTML = catsForFat(tipo).map(c=>`<option value="${esc(c)}" ${c===atual?"selected":""}>${esc(c)}</option>`).join("");
-        });
-      });
+      wireTipoContaCampo(body, "imp-categoria", { lado:tipo });
       fileInput.addEventListener("change", async ()=>{
         const file = fileInput.files[0];
         submitBtn.disabled = true;
@@ -3288,7 +3226,7 @@ function fatLancamentoDetalheHTML(l){
         ${badge(l.status)}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campoDetalheFat("Categoria", esc(l.categoria||"—"))}
+        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria)))}
         ${campoDetalheFat("Unidade", esc(l.unidade||"—"))}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
@@ -3342,7 +3280,6 @@ function renderFatDuplicatas(container){
   function build(){
     const todas = STATE.faturamentoLancamentos.filter(l=>l.tipo==="saida" && l.duplicata);
     const unidades = Array.from(new Set(todas.map(l=>l.unidade))).sort();
-    const categorias = Array.from(new Set(todas.map(l=>l.categoria))).sort();
 
     container.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
@@ -3362,8 +3299,8 @@ function renderFatDuplicatas(container){
         <div><span class="field-label">Vencimento até</span><input class="input" type="date" id="dup-ate" /></div>
         <div><span class="field-label">Unidade</span>
           <select class="input" id="dup-unidade"><option value="">Todas</option>${unidades.map(u=>`<option value="${esc(u)}">${esc(u)}</option>`).join("")}</select></div>
-        <div><span class="field-label">Categoria</span>
-          <select class="input" id="dup-categoria"><option value="">Todas</option>${categorias.map(c=>`<option value="${esc(c)}">${esc(c)}</option>`).join("")}</select></div>
+        <div><span class="field-label">Categoria Financeira</span>
+          <select class="input" id="dup-categoria">${filtroGrupoOptionsHTML(todas)}</select></div>
         <div><span class="field-label">Status</span>
           <select class="input" id="dup-status"><option value="">Todos</option><option value="previsto">Em aberto</option><option value="realizado">Pago</option></select></div>
       </div>
@@ -3385,7 +3322,7 @@ function renderFatDuplicatas(container){
       if(filters.de && l.data_prevista < filters.de) return false;
       if(filters.ate && l.data_prevista > filters.ate) return false;
       if(filters.unidade && l.unidade!==filters.unidade) return false;
-      if(filters.categoria && l.categoria!==filters.categoria) return false;
+      if(filters.categoria && grupoDe(l)!==filters.categoria) return false;
       if(filters.status && l.status!==filters.status) return false;
       return true;
     });
@@ -3405,7 +3342,7 @@ function renderFatDuplicatas(container){
       ${bulkBarHTML(selecionados, "Marcar como pago")}
       <div class="card" style="overflow-x:auto;">
         <table>
-          <thead><tr>${thCheckAll()}${thSort("Vencimento","vencimento",sortState)}${thSort("Status","status",sortState)}${thSort("Nº Duplicata","numero",sortState)}${thSort("Fornecedor","contraparte",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thCheckAll()}${thSort("Vencimento","vencimento",sortState)}${thSort("Status","status",sortState)}${thSort("Nº Duplicata","numero",sortState)}${thSort("Fornecedor","contraparte",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${duplicatasOrdenadas.map(l=>{
               const atrasado = l.status==="previsto" && l.data_prevista < hoje;
@@ -3415,7 +3352,7 @@ function renderFatDuplicatas(container){
                 <td>${badge(l.status)}</td>
                 <td style="color:#78716c;">${esc(l.numero_duplicata||"—")}</td>
                 <td style="font-weight:500;color:#44403c;">${esc(l.contraparte)}</td>
-                <td style="color:#78716c;">${esc(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria)}</td>
                 <td style="color:#78716c;">${esc(l.unidade)}</td>
                 <td style="text-align:right;font-weight:600;color:${DANGER};">${currency(l.valor)}</td>
                 <td style="text-align:right;">${l.status==="previsto" ? `<button class="quitar-dup-btn" data-id="${l.id}" style="border:none;background:none;font-size:11px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;">Marcar como pago</button>` : ""}</td>
@@ -3464,7 +3401,7 @@ function renderFatDashboard(container){
     const previstoSaidas = STATE.faturamentoLancamentos.filter(l=>l.tipo==="saida" && noPeriodo(l)).reduce((s,l)=>s+l.valor,0);
     const duplicatasAbertas = STATE.faturamentoLancamentos.filter(l=>l.tipo==="saida" && l.duplicata && l.status==="previsto").reduce((s,l)=>s+l.valor,0);
 
-    const porCategoria = {}; saidasR.forEach(l=>{ porCategoria[l.categoria]=(porCategoria[l.categoria]||0)+l.valor; });
+    const porCategoria = {}; saidasR.forEach(l=>{ porCategoria[grupoDe(l)]=(porCategoria[grupoDe(l)]||0)+l.valor; });
     const topCategorias = Object.entries(porCategoria).sort((a,b)=>b[1]-a[1]).slice(0,5);
     const porUnidade = {}; entradasR.forEach(l=>{ porUnidade[l.unidade]=(porUnidade[l.unidade]||0)+l.valor; });
     const topUnidades = Object.entries(porUnidade).sort((a,b)=>b[1]-a[1]).slice(0,5);
@@ -3494,7 +3431,7 @@ function renderFatDashboard(container){
           <canvas id="chart-fat-fluxo" height="200"></canvas>
         </div>
         <div class="card" style="padding:16px;">
-          <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Categorias que mais consumiram</h3>
+          <h3 class="serif" style="margin:0 0 10px;font-size:15px;color:${BRAND[800]};">Categorias financeiras que mais consumiram</h3>
           ${topCategorias.length ? `<canvas id="chart-fat-cat" height="200"></canvas>` : `<p class="empty">Sem saídas realizadas no período.</p>`}
         </div>
         <div class="card" style="padding:16px;">
@@ -3534,9 +3471,9 @@ function renderFatPersonalizado(container){
   let valorSel = "";
 
   function build(){
-    const set = new Set(); STATE.faturamentoLancamentos.forEach(l=> set.add(modo==="categoria"?l.categoria:l.contraparte));
+    const set = new Set(); STATE.faturamentoLancamentos.forEach(l=> set.add(modo==="categoria"?grupoDe(l):l.contraparte));
     const opcoes = Array.from(set).sort();
-    const filtrados = valorSel ? STATE.faturamentoLancamentos.filter(l=> (modo==="categoria"?l.categoria:l.contraparte)===valorSel) : [];
+    const filtrados = valorSel ? STATE.faturamentoLancamentos.filter(l=> (modo==="categoria"?grupoDe(l):l.contraparte)===valorSel) : [];
     const entradas = filtrados.filter(l=>l.tipo==="entrada"&&l.status==="realizado").reduce((s,l)=>s+l.valor,0);
     const saidas = filtrados.filter(l=>l.tipo==="saida"&&l.status==="realizado").reduce((s,l)=>s+l.valor,0);
 
@@ -3546,15 +3483,15 @@ function renderFatPersonalizado(container){
 
     container.innerHTML = `
       <h2 class="serif" style="margin:0 0 4px;font-size:24px;color:${BRAND[800]};">Faturamentos — Análise Personalizada</h2>
-      <p class="muted" style="margin:0 0 18px;font-size:13px;">Filtre por categoria ou por cliente/fornecedor específico para ver um recorte dedicado.</p>
+      <p class="muted" style="margin:0 0 18px;font-size:13px;">Filtre por categoria financeira ou por cliente/fornecedor específico para ver um recorte dedicado.</p>
       <div class="card" style="padding:14px;margin-bottom:18px;display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;">
         <div><span class="field-label">Analisar por</span>
-          <select class="input" id="fpz-modo" style="width:auto;"><option value="categoria" ${modo==="categoria"?"selected":""}>Categoria</option><option value="contraparte" ${modo==="contraparte"?"selected":""}>Cliente / Fornecedor</option></select></div>
-        <div style="flex:1;min-width:220px;"><span class="field-label">${modo==="categoria"?"Categoria":"Nome"}</span>
+          <select class="input" id="fpz-modo" style="width:auto;"><option value="categoria" ${modo==="categoria"?"selected":""}>Categoria Financeira</option><option value="contraparte" ${modo==="contraparte"?"selected":""}>Cliente / Fornecedor</option></select></div>
+        <div style="flex:1;min-width:220px;"><span class="field-label">${modo==="categoria"?"Categoria Financeira":"Nome"}</span>
           <select class="input" id="fpz-valor"><option value="">Selecione...</option>${opcoes.map(o=>`<option value="${esc(o)}" ${o===valorSel?"selected":""}>${esc(o)}</option>`).join("")}</select></div>
       </div>
       <div id="fpz-results">
-        ${!valorSel ? `<div class="card empty" style="border-style:dashed;padding:60px 10px;">Selecione uma categoria ou um cliente/fornecedor acima para gerar a análise.</div>` : `
+        ${!valorSel ? `<div class="card empty" style="border-style:dashed;padding:60px 10px;">Selecione uma categoria financeira ou um cliente/fornecedor acima para gerar a análise.</div>` : `
         <div class="grid-4" style="margin-bottom:16px;">
           ${statCard("Total recebido", currency(entradas), "down", BRAND[100], BRAND[600])}
           ${statCard("Total gasto", currency(saidas), "up", DANGER_BG, DANGER)}
@@ -3566,10 +3503,10 @@ function renderFatPersonalizado(container){
           ${serieKeys.length ? `<canvas id="chart-fat-pz" height="180"></canvas>` : `<p class="empty">Sem lançamentos realizados para esse recorte.</p>`}
         </div>
         <div class="card" style="overflow-x:auto;">
-          <table><thead><tr><th>Data</th><th>Tipo</th><th>Categoria</th><th>Contraparte</th><th>Unidade</th><th style="text-align:right;">Valor</th></tr></thead>
+          <table><thead><tr><th>Data</th><th>Tipo</th><th>Tipo de Conta</th><th>Contraparte</th><th>Unidade</th><th style="text-align:right;">Valor</th></tr></thead>
           <tbody>${filtrados.sort((a,b)=>(b.data_realizada||b.data_prevista).localeCompare(a.data_realizada||a.data_prevista)).map(l=>`
             <tr><td>${fmtDate(l.data_realizada||l.data_prevista)}</td><td>${l.tipo==="entrada"?"Entrada":"Saída"}</td>
-            <td style="color:#78716c;">${esc(l.categoria)}</td><td style="font-weight:500;">${esc(l.contraparte)}</td><td style="color:#78716c;">${esc(l.unidade)}</td>
+            <td>${tipoCellHTML(l.categoria)}</td><td style="font-weight:500;">${esc(l.contraparte)}</td><td style="color:#78716c;">${esc(l.unidade)}</td>
             <td style="text-align:right;font-weight:600;color:${l.tipo==="entrada"?BRAND[600]:DANGER};">${currency(l.valor)}</td></tr>`).join("")}</tbody></table>
         </div>`}
       </div>`;
@@ -3759,11 +3696,7 @@ function fornecedorFormHTML(item){
             <button type="button" class="btn btn-outline" id="ff-consultar-cnpj" title="Buscar dados pelo CNPJ" style="padding:0 12px;white-space:nowrap;">${icon("search",14)} Consultar</button>
           </div>
         </label>
-        <label class="field"><span class="field-label">Categoria financeira</span>
-          <select class="input" id="ff-categoria">
-            <option value="">Selecione...</option>
-            ${STATE.categoriasFinanceiras.map(c=>`<option value="${esc(c.categoria)}" ${item&&item.categoria_padrao===c.categoria?"selected":""}>${esc(c.categoria)}${c.status==="inativo"?" (inativa)":""}</option>`).join("")}
-          </select></label>
+        ${tipoContaCampoHTML("ff-categoria", item?item.tipo_conta:"", { required:false })}
       </div>
       <label class="field"><span class="field-label">Unidade padrão</span>
         <input class="input" id="ff-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
@@ -3783,6 +3716,7 @@ function openFornecedorModal(item, onSaved){
     bodyHTML: fornecedorFormHTML(item),
     mount:(body)=>{
       body.querySelector("#ff-cancel").addEventListener("click", closeModal);
+      wireTipoContaCampo(body, "ff-categoria");
       wireConsultaCNPJ(body, { btn:"#ff-consultar-cnpj", documento:"#ff-documento", nome:"#ff-nome", nomeFantasia:"#ff-nome-fantasia", telefone:"#ff-telefone", observacoes:"#ff-obs" });
       body.querySelector("#fornecedor-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
@@ -3794,7 +3728,7 @@ function openFornecedorModal(item, onSaved){
           telefone: body.querySelector("#ff-telefone").value.trim(),
           email: body.querySelector("#ff-email").value.trim(),
           documento: body.querySelector("#ff-documento").value.trim(),
-          categoria_padrao: body.querySelector("#ff-categoria").value.trim(),
+          tipo_conta: body.querySelector("#ff-categoria").value.trim() || null,
           unidade_padrao: body.querySelector("#ff-unidade").value.trim(),
           observacoes: body.querySelector("#ff-obs").value.trim(),
         };
@@ -3804,7 +3738,7 @@ function openFornecedorModal(item, onSaved){
           if(item) await editFornecedor(item.id, payload);
           else await addFornecedor(payload);
           closeModal(); onSaved && onSaved();
-        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar fornecedor`; }
+        }catch(err){ toast(/tipo_conta/.test(err.message) ? "Falta criar a coluna tipo_conta no Supabase — rode o arquivo sql_tipo_conta_cliente_fornecedor.sql." : err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar fornecedor`; }
       });
     }
   });
@@ -3821,7 +3755,7 @@ function fornecedorDetalheHTML(f){
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         ${campo("CNPJ/CPF", f.documento)}
-        ${campo("Categoria financeira", f.categoria_padrao)}
+        ${campo("Tipo de Conta", f.tipo_conta ? tipoDetalheTexto(f.tipo_conta) : "")}
       </div>
       ${campo("Unidade padrão", f.unidade_padrao)}
       ${campo("Observações", f.observacoes)}
@@ -3852,7 +3786,7 @@ function renderCadFornecedores(container){
   const sortState = { key:"nome", dir:"asc" };
   const sortExtractors = {
     nome: f=>f.nome, nomeFantasia: f=>f.nome_fantasia, telefone: f=>f.telefone, observacoes: f=>f.observacoes,
-    documento: f=>f.documento, categoria: f=>f.categoria_padrao, unidade: f=>f.unidade_padrao, usuario: f=>f.usuario_nome,
+    documento: f=>f.documento, categoria: f=>f.tipo_conta, unidade: f=>f.unidade_padrao, usuario: f=>f.usuario_nome,
   };
 
   function refresh(){
@@ -3867,7 +3801,7 @@ function renderCadFornecedores(container){
       </div>
       <div class="card" style="overflow-x:auto;">
         <table>
-          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Nome fantasia","nomeFantasia",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Nome fantasia","nomeFantasia",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${dados.map(f=>`
               <tr class="fornecedor-row" data-id="${f.id}" style="cursor:pointer;">
@@ -3876,7 +3810,7 @@ function renderCadFornecedores(container){
                 <td style="color:#78716c;">${esc(f.telefone||"—")}</td>
                 <td style="color:#78716c;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(f.observacoes||"")}">${esc(f.observacoes||"—")}</td>
                 <td style="color:#78716c;">${esc(f.documento||"—")}</td>
-                <td style="color:#78716c;">${esc(f.categoria_padrao||"—")}</td>
+                <td>${f.tipo_conta ? tipoCellHTML(f.tipo_conta) : `<span style="color:#a8a29e;">—</span>`}</td>
                 <td style="color:#78716c;">${esc(f.unidade_padrao||"—")}</td>
                 <td style="color:#a8a29e;font-size:12px;">${esc(f.usuario_nome||"—")}</td>
                 <td>
@@ -3934,11 +3868,7 @@ function clienteFormHTML(item){
             <button type="button" class="btn btn-outline" id="fc-consultar-cnpj" title="Buscar dados pelo CNPJ" style="padding:0 12px;white-space:nowrap;">${icon("search",14)} Consultar</button>
           </div>
         </label>
-        <label class="field"><span class="field-label">Categoria financeira</span>
-          <select class="input" id="fc-categoria">
-            <option value="">Selecione...</option>
-            ${STATE.categoriasFinanceiras.map(c=>`<option value="${esc(c.categoria)}" ${item&&item.categoria_padrao===c.categoria?"selected":""}>${esc(c.categoria)}${c.status==="inativo"?" (inativa)":""}</option>`).join("")}
-          </select></label>
+        ${tipoContaCampoHTML("fc-categoria", item?item.tipo_conta:"", { required:false })}
       </div>
       <label class="field"><span class="field-label">Unidade padrão</span>
         <input class="input" id="fc-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
@@ -3958,6 +3888,7 @@ function openClienteModal(item, onSaved){
     bodyHTML: clienteFormHTML(item),
     mount:(body)=>{
       body.querySelector("#fc-cancel").addEventListener("click", closeModal);
+      wireTipoContaCampo(body, "fc-categoria");
       wireConsultaCNPJ(body, { btn:"#fc-consultar-cnpj", documento:"#fc-documento", nome:"#fc-nome", nomeFantasia:"#fc-nome-fantasia", telefone:"#fc-telefone", observacoes:"#fc-obs" });
       body.querySelector("#cliente-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
@@ -3969,7 +3900,7 @@ function openClienteModal(item, onSaved){
           telefone: body.querySelector("#fc-telefone").value.trim(),
           email: body.querySelector("#fc-email").value.trim(),
           documento: body.querySelector("#fc-documento").value.trim(),
-          categoria_padrao: body.querySelector("#fc-categoria").value.trim(),
+          tipo_conta: body.querySelector("#fc-categoria").value.trim() || null,
           unidade_padrao: body.querySelector("#fc-unidade").value.trim(),
           observacoes: body.querySelector("#fc-obs").value.trim(),
         };
@@ -3979,7 +3910,7 @@ function openClienteModal(item, onSaved){
           if(item) await editCliente(item.id, payload);
           else await addCliente(payload);
           closeModal(); onSaved && onSaved();
-        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar cliente`; }
+        }catch(err){ toast(/tipo_conta/.test(err.message) ? "Falta criar a coluna tipo_conta no Supabase — rode o arquivo sql_tipo_conta_cliente_fornecedor.sql." : err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar cliente`; }
       });
     }
   });
@@ -3996,7 +3927,7 @@ function clienteDetalheHTML(cl){
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         ${campo("CNPJ/CPF", cl.documento)}
-        ${campo("Categoria financeira", cl.categoria_padrao)}
+        ${campo("Tipo de Conta", cl.tipo_conta ? tipoDetalheTexto(cl.tipo_conta) : "")}
       </div>
       ${campo("Unidade padrão", cl.unidade_padrao)}
       ${campo("Observações", cl.observacoes)}
@@ -4027,7 +3958,7 @@ function renderCadClientes(container){
   const sortState = { key:"nome", dir:"asc" };
   const sortExtractors = {
     nome: c=>c.nome, nomeFantasia: c=>c.nome_fantasia, telefone: c=>c.telefone, observacoes: c=>c.observacoes,
-    documento: c=>c.documento, categoria: c=>c.categoria_padrao, unidade: c=>c.unidade_padrao, usuario: c=>c.usuario_nome,
+    documento: c=>c.documento, categoria: c=>c.tipo_conta, unidade: c=>c.unidade_padrao, usuario: c=>c.usuario_nome,
   };
 
   function refresh(){
@@ -4042,7 +3973,7 @@ function renderCadClientes(container){
       </div>
       <div class="card" style="overflow-x:auto;">
         <table>
-          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Nome fantasia","nomeFantasia",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Categoria","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Nome fantasia","nomeFantasia",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${dados.map(cl=>`
               <tr class="cliente-row" data-id="${cl.id}" style="cursor:pointer;">
@@ -4051,7 +3982,7 @@ function renderCadClientes(container){
                 <td style="color:#78716c;">${esc(cl.telefone||"—")}</td>
                 <td style="color:#78716c;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(cl.observacoes||"")}">${esc(cl.observacoes||"—")}</td>
                 <td style="color:#78716c;">${esc(cl.documento||"—")}</td>
-                <td style="color:#78716c;">${esc(cl.categoria_padrao||"—")}</td>
+                <td>${cl.tipo_conta ? tipoCellHTML(cl.tipo_conta) : `<span style="color:#a8a29e;">—</span>`}</td>
                 <td style="color:#78716c;">${esc(cl.unidade_padrao||"—")}</td>
                 <td style="color:#a8a29e;font-size:12px;">${esc(cl.usuario_nome||"—")}</td>
                 <td>
@@ -4132,11 +4063,17 @@ function openCategoriaFinanceiraModal(item, onSaved){
           descricao: body.querySelector("#cff-descricao").value.trim() || null,
           status: body.querySelector("#cff-status").value,
         };
+        const repetida = STATE.categoriasFinanceiras.find(c=> normKey(c.categoria)===normKey(categoria) && (!item || c.id!==item.id));
+        if(repetida){ toast(`Já existe a categoria financeira "${repetida.categoria}".`, true); return; }
         const btn = body.querySelector("#cff-submit");
         btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
         try{
-          if(item) await editCategoriaFinanceira(item.id, payload);
-          else await addCategoriaFinanceira(payload);
+          if(item){
+            await editCategoriaFinanceira(item.id, payload);
+            if(item.categoria !== categoria){   // os tipos de conta dessa categoria acompanham o novo nome
+              await moverTiposParaCategoria(STATE.tiposConta.filter(t=> normKey(t.categoria_financeira)===normKey(item.categoria)), categoria);
+            }
+          } else await addCategoriaFinanceira(payload);
           closeModal(); onSaved && onSaved();
         }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar categoria`; }
       });
@@ -4159,7 +4096,7 @@ function renderCadCategoriasFinanceiras(container){
       </div>
       <div class="card" style="overflow-x:auto;">
         <table>
-          <thead><tr>${thSort("Ordem","ordem",sortState)}${thSort("Categoria","categoria",sortState)}<th>Descrição</th>${thSort("Status","status",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Ordem","ordem",sortState)}${thSort("Tipo de Conta","categoria",sortState)}<th>Descrição</th>${thSort("Status","status",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${dados.map(c=>`
               <tr>
@@ -4185,10 +4122,7 @@ function renderCadCategoriasFinanceiras(container){
       openCategoriaFinanceiraModal(STATE.categoriasFinanceiras.find(c=>c.id===b.dataset.id), refresh);
     }));
     container.querySelectorAll(".del-catfin-btn").forEach(b=> b.addEventListener("click", ()=>{
-      const item = STATE.categoriasFinanceiras.find(c=>c.id===b.dataset.id);
-      openConfirm(`Excluir a categoria financeira "${item.categoria}"? Essa ação não pode ser desfeita.`, async ()=>{
-        try{ await deleteCategoriaFinanceira(item.id); refresh(); }catch(err){ toast(err.message, true); }
-      });
+      abrirExclusaoCategoriaFinanceira(STATE.categoriasFinanceiras.find(c=>c.id===b.dataset.id), refresh);
     }));
   }
   refresh();
@@ -4219,16 +4153,278 @@ function tipoContaFormHTML(item){
       </div>
     </form>`;
 }
-function openTipoContaModal(item, onSaved){
+/* ---- Uso de cada Tipo de Conta (lançamentos + cadastros) ---- */
+function usoPorTipo(){
+  const mapa = new Map();
+  const bump = (nome, campo)=>{ const k = normKey(nome); if(!k) return; const o = mapa.get(k) || { lanc:0, cad:0 }; o[campo]++; mapa.set(k,o); };
+  STATE.lancamentos.forEach(l=>bump(l.categoria,"lanc"));
+  STATE.cartaoLancamentos.forEach(l=>bump(l.categoria,"lanc"));
+  STATE.valeLancamentos.forEach(l=>bump(l.categoria,"lanc"));
+  STATE.faturamentoLancamentos.forEach(l=>bump(l.categoria,"lanc"));
+  STATE.clientes.forEach(c=>bump(c.tipo_conta,"cad"));
+  STATE.fornecedores.forEach(f=>bump(f.tipo_conta,"cad"));
+  return mapa;
+}
+const usoDoTipoConta = (nome) => usoPorTipo().get(normKey(nome)) || { lanc:0, cad:0 };
+
+async function patchEmLotes(tabela, ids, body){
+  for(let i=0;i<ids.length;i+=100){
+    const parte = ids.slice(i,i+100);
+    await sbFetch(`/rest/v1/${tabela}?id=in.(${parte.join(",")})`, { method:"PATCH", body });
+  }
+}
+/* Passa TUDO que usa o tipo de conta "antigo" (lançamentos de todas as telas e cadastros de
+   clientes/fornecedores) para o tipo de conta "novo". Usado ao renomear e ao excluir. */
+async function moverTipoConta(antigo, novo){
+  const k = normKey(antigo);
+  const alvos = [
+    ["lancamentos","lancamentos","categoria"], ["cartao_lancamentos","cartaoLancamentos","categoria"],
+    ["vale_lancamentos","valeLancamentos","categoria"], ["faturamento_lancamentos","faturamentoLancamentos","categoria"],
+    ["clientes","clientes","tipo_conta"], ["fornecedores","fornecedores","tipo_conta"],
+  ];
+  for(const [tabela, chave, campo] of alvos){
+    const ids = STATE[chave].filter(r=> normKey(r[campo])===k && r[campo]!==novo).map(r=>r.id);
+    if(!ids.length) continue;
+    await patchEmLotes(tabela, ids, { [campo]: novo });
+    const set = new Set(ids);
+    STATE[chave] = STATE[chave].map(r=> set.has(r.id) ? { ...r, [campo]: novo } : r);
+  }
+}
+async function moverTiposParaCategoria(tipos, destino){
+  const ids = tipos.map(t=>t.id);
+  if(!ids.length) return;
+  await patchEmLotes("tipos_conta", ids, { categoria_financeira: destino || null });
+  const set = new Set(ids);
+  STATE.tiposConta = STATE.tiposConta.map(t=> set.has(t.id) ? { ...t, categoria_financeira: destino || null } : t);
+}
+const textoUso = (uso) => {
+  const partes = [];
+  if(uso.lanc) partes.push(`<b>${uso.lanc}</b> lançamento(s)`);
+  if(uso.cad) partes.push(`<b>${uso.cad}</b> cadastro(s) de cliente/fornecedor`);
+  return partes.join(" e ");
+};
+
+function abrirExclusaoTipoConta(item, onDone){
+  const uso = usoDoTipoConta(item.nome);
+  if(!uso.lanc && !uso.cad){
+    openConfirm(`Excluir o tipo de conta "${item.nome}"? Essa ação não pode ser desfeita.`, async ()=>{
+      try{ await deleteTipoConta(item.id); onDone && onDone(); }catch(err){ toast(err.message, true); }
+    });
+    return;
+  }
   openModal({
+    title: "Excluir tipo de conta",
+    bodyHTML: `
+      <form id="tcdel-form">
+        <p style="margin:0 0 12px;font-size:14px;color:#44403c;line-height:1.5;">O tipo de conta <b>${esc(item.nome)}</b> está sendo usado em ${textoUso(uso)}. Para excluir, escolha para qual tipo de conta eles serão passados:</p>
+        <label class="field"><span class="field-label">Passar tudo para</span>
+          <select class="input" id="tcdel-destino" required>${tipoContaOptionsHTML("", { excluir:item.nome })}</select>
+          <span class="field-hint" id="tcdel-destino-catfin" style="margin-top:5px;">${catfinHintTexto("")}</span>
+        </label>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;">
+          <button type="button" class="btn btn-outline" id="tcdel-cancel">Cancelar</button>
+          <button type="submit" class="btn btn-danger" id="tcdel-submit">${icon("trash",15)} Passar e excluir</button>
+        </div>
+      </form>`,
+    mount:(body)=>{
+      const sel = body.querySelector("#tcdel-destino");
+      sel.addEventListener("change", ()=>{ body.querySelector("#tcdel-destino-catfin").innerHTML = catfinHintTexto(sel.value); });
+      body.querySelector("#tcdel-cancel").addEventListener("click", closeModal);
+      body.querySelector("#tcdel-form").addEventListener("submit", async (e)=>{
+        e.preventDefault();
+        const destino = sel.value;
+        if(!destino) return;
+        const btn = body.querySelector("#tcdel-submit");
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Passando...`;
+        try{
+          await moverTipoConta(item.nome, destino);
+          await deleteTipoConta(item.id);
+          closeModal(); toast(`Tudo foi passado para "${destino}" e o tipo "${item.nome}" foi excluído.`);
+          onDone && onDone();
+        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("trash",15)} Passar e excluir`; }
+      });
+    }
+  });
+}
+function abrirExclusaoCategoriaFinanceira(item, onDone){
+  const kCat = normKey(item.categoria);
+  const filhos = STATE.tiposConta.filter(t=> normKey(t.categoria_financeira)===kCat);
+  if(!filhos.length){
+    openConfirm(`Excluir a categoria financeira "${item.categoria}"? Essa ação não pode ser desfeita.`, async ()=>{
+      try{ await deleteCategoriaFinanceira(item.id); onDone && onDone(); }catch(err){ toast(err.message, true); }
+    });
+    return;
+  }
+  const usos = usoPorTipo();
+  const totalLanc = filhos.reduce((s,t)=> s + ((usos.get(normKey(t.nome))||{}).lanc||0), 0);
+  const outras = STATE.categoriasFinanceiras.filter(c=>c.id!==item.id);
+  openModal({
+    title: "Excluir categoria financeira",
+    bodyHTML: `
+      <form id="cfdel-form">
+        <p style="margin:0 0 8px;font-size:14px;color:#44403c;line-height:1.5;">A categoria financeira <b>${esc(item.categoria)}</b> tem <b>${filhos.length}</b> tipo(s) de conta${totalLanc ? ` (usados em <b>${totalLanc}</b> lançamento(s))` : ""}. Para excluir, escolha para qual categoria financeira eles serão passados — os lançamentos acompanham os tipos de conta.</p>
+        <p class="field-hint" style="margin:0 0 12px;">Tipos: ${filhos.slice(0,12).map(t=>esc(t.nome)).join(", ")}${filhos.length>12?` e mais ${filhos.length-12}…`:""}</p>
+        <label class="field"><span class="field-label">Passar tudo para</span>
+          <select class="input" id="cfdel-destino" required>
+            <option value="">Selecione...</option>
+            ${outras.map(c=>`<option value="${esc(c.categoria)}">${esc(c.categoria)}${c.status==="inativo"?" (inativa)":""}</option>`).join("")}
+            <option value="__nenhuma">— Deixar sem categoria financeira —</option>
+          </select></label>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;">
+          <button type="button" class="btn btn-outline" id="cfdel-cancel">Cancelar</button>
+          <button type="submit" class="btn btn-danger" id="cfdel-submit">${icon("trash",15)} Passar e excluir</button>
+        </div>
+      </form>`,
+    mount:(body)=>{
+      body.querySelector("#cfdel-cancel").addEventListener("click", closeModal);
+      body.querySelector("#cfdel-form").addEventListener("submit", async (e)=>{
+        e.preventDefault();
+        const v = body.querySelector("#cfdel-destino").value;
+        if(!v) return;
+        const destino = v==="__nenhuma" ? null : v;
+        const btn = body.querySelector("#cfdel-submit");
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Passando...`;
+        try{
+          await moverTiposParaCategoria(filhos, destino);
+          await deleteCategoriaFinanceira(item.id);
+          closeModal(); toast(destino ? `Tipos de conta passados para "${destino}" e categoria excluída.` : "Categoria excluída. Os tipos de conta ficaram sem categoria financeira.");
+          onDone && onDone();
+        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("trash",15)} Passar e excluir`; }
+      });
+    }
+  });
+}
+
+/* ---- Importar categorias antigas (tabela "categorias" + nomes já usados nos lançamentos) como Tipos de Conta ---- */
+const ORIGEM_LABEL = { entrada:"Entradas", saida:"Saídas", cartao:"Cartões", vale:"Vales", fat_entrada:"Fat. Entradas", fat_saida:"Fat. Saídas" };
+function categoriasAntigasPendentes(){
+  const mapa = new Map();
+  const add = (nome, origem)=>{
+    const n = String(nome||"").trim(); if(!n) return;
+    if(tipoContaPorNome(n)) return;
+    const k = normKey(n);
+    if(!mapa.has(k)) mapa.set(k, { nome:n, origens:new Set() });
+    mapa.get(k).origens.add(origem);
+  };
+  STATE.categorias.forEach(c=>add(c.nome, c.tipo));
+  STATE.lancamentos.forEach(l=>add(l.categoria, l.tipo));
+  STATE.cartaoLancamentos.forEach(l=>add(l.categoria, "cartao"));
+  STATE.valeLancamentos.forEach(l=>add(l.categoria, "vale"));
+  STATE.faturamentoLancamentos.forEach(l=>add(l.categoria, "fat_"+l.tipo));
+  return Array.from(mapa.values()).sort((a,b)=>a.nome.localeCompare(b.nome));
+}
+function sugerirCategoriaFinanceira(nome, origens){
+  const n = normKey(nome);
+  const so = (...lista)=> [...origens].every(o=>lista.includes(o));
+  const existe = (g)=> STATE.categoriasFinanceiras.some(c=>c.categoria===g) ? g : "";
+  let g;
+  if(so("vale")) g = "Vales Recebidos";
+  else if(so("entrada","fat_entrada","vale")){
+    if(/aporte|emprest|contrato|socio|capital/.test(n)) g = "Aportes e Empréstimos";
+    else if(/reembols|devolu|troco|estorno|outr/.test(n)) g = "Outras Receitas";
+    else g = "Receitas Operacionais";
+  } else {
+    if(/pessoal|folha|salari|\b13|fgts|ferias|rescis|sindicat|funcionar/.test(n)) g = "Despesas com Pessoal";
+    else if(/insumo|estoc|plastic|utensil|duplicata|fornecedor|descart|mercadoria/.test(n)) g = "Fornecedores e Insumos";
+    else if(/prestador|consultor|contab|advog|terceiriz/.test(n)) g = "Prestadores de Serviço";
+    else if(/papelar|escrit|assinatur|software|sistema|informat|internet|telefone|celular/.test(n)) g = "Despesas Administrativas";
+    else if(/manuten|limpez|alarme|energia|hospedag|aluguel|\bagua|\bgas\b|condomin|reforma/.test(n)) g = "Manutenção e Estrutura";
+    else if(/veicul|transport|multa|combustiv|frete/.test(n)) g = "Veículos e Transporte";
+    else if(/conven|farmac|alimenta|uniforme|medic|saude/.test(n)) g = "Benefícios e Convênios";
+    else if(/imposto|\btaxa|inss|\biss\b|tribut|darf/.test(n)) g = "Impostos e Taxas";
+    else if(/cheque|devolu|tarifa|juros|banc/.test(n)) g = "Despesas Financeiras";
+    else g = "Outras Despesas";
+  }
+  return existe(g);
+}
+function openImportarCategoriasAntigasModal(onDone){
+  const lista = categoriasAntigasPendentes();
+  const usos = usoPorTipo();
+  const catOpts = (sel)=> `<option value="">Selecione...</option>` + STATE.categoriasFinanceiras.map(c=>`<option value="${esc(c.categoria)}" ${c.categoria===sel?"selected":""}>${esc(c.categoria)}${c.status==="inativo"?" (inativa)":""}</option>`).join("");
+  openModal({
+    title: "Importar categorias antigas",
+    wide: true,
+    bodyHTML: `
+      <form id="impcat-form">
+        <p class="field-hint" style="margin-top:-4px;">Estas são as categorias antigas (e nomes já usados em lançamentos) que ainda não existem como Tipo de Conta. Escolha a Categoria Financeira de cada uma — já deixei uma sugestão — e desmarque as que não quiser trazer. Depois você pode editar ou excluir qualquer tipo normalmente.</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#57534e;margin:0 0 10px;cursor:pointer;">
+          <input type="checkbox" id="impcat-upper" checked /> Escrever os nomes em MAIÚSCULAS (igual aos seus tipos de conta atuais)
+        </label>
+        <div style="max-height:52vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px;">
+          <table style="width:100%;">
+            <thead style="position:sticky;top:0;background:#fff;">
+              <tr>
+                <th style="padding:8px;width:34px;"><input type="checkbox" id="impcat-all" checked /></th>
+                <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">Categoria antiga</th>
+                <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">Usada em</th>
+                <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">Categoria Financeira</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${lista.map((c,i)=>{
+                const u = usos.get(normKey(c.nome));
+                return `<tr class="impcat-row" data-i="${i}">
+                  <td style="padding:6px 8px;"><input type="checkbox" class="impcat-chk" checked /></td>
+                  <td style="padding:6px 8px;font-weight:500;color:#44403c;">${esc(c.nome)}</td>
+                  <td style="padding:6px 8px;font-size:12px;color:#78716c;">${[...c.origens].map(o=>ORIGEM_LABEL[o]||o).join(", ")}${u&&u.lanc?` · ${u.lanc} lanç.`:""}</td>
+                  <td style="padding:6px 8px;"><select class="input impcat-sel" style="padding:6px 8px;font-size:13px;min-width:200px;">${catOpts(sugerirCategoriaFinanceira(c.nome, c.origens))}</select></td>
+                </tr>`; }).join("")}
+            </tbody>
+          </table>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px;">
+          <button type="button" class="btn btn-outline" id="impcat-cancel">Cancelar</button>
+          <button type="submit" class="btn btn-primary" id="impcat-submit">${icon("check",15)} Importar selecionadas</button>
+        </div>
+      </form>`,
+    mount:(body)=>{
+      body.querySelector("#impcat-cancel").addEventListener("click", closeModal);
+      const all = body.querySelector("#impcat-all");
+      all.addEventListener("change", ()=> body.querySelectorAll(".impcat-chk").forEach(c=>{ c.checked = all.checked; }));
+      body.querySelector("#impcat-form").addEventListener("submit", async (e)=>{
+        e.preventDefault();
+        const upper = body.querySelector("#impcat-upper").checked;
+        const linhas = [];
+        for(const tr of body.querySelectorAll(".impcat-row")){
+          if(!tr.querySelector(".impcat-chk").checked) continue;
+          const c = lista[parseInt(tr.dataset.i,10)];
+          const cat = tr.querySelector(".impcat-sel").value;
+          if(!cat){ toast(`Escolha a categoria financeira de "${c.nome}" (ou desmarque a linha).`, true); return; }
+          linhas.push({ nome: upper ? c.nome.toLocaleUpperCase("pt-BR") : c.nome, categoria_financeira: cat, status:"ativo", usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome });
+        }
+        if(!linhas.length){ toast("Nenhuma categoria marcada.", true); return; }
+        // nomes que ficariam repetidos depois de passar para maiúsculas
+        const vistos = new Set(); const unicas = [];
+        linhas.forEach(l=>{ const k = normKey(l.nome); if(!vistos.has(k) && !tipoContaPorNome(l.nome)){ vistos.add(k); unicas.push(l); } });
+        const btn = body.querySelector("#impcat-submit");
+        btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Importando...`;
+        try{
+          for(let i=0;i<unicas.length;i+=100){
+            await sbFetch(`/rest/v1/tipos_conta`, { method:"POST", body: unicas.slice(i,i+100) });
+          }
+          await reloadTiposConta();
+          closeModal(); toast(`${unicas.length} tipo(s) de conta importado(s).`);
+          onDone && onDone();
+        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Importar selecionadas`; }
+      });
+    }
+  });
+}
+
+function openTipoContaModal(item, onSaved, { nested=false }={}){
+  const open = nested ? openNestedModal : openModal;
+  const close = nested ? closeNestedModal : closeModal;
+  open({
     title: item ? "Editar tipo de conta" : "Novo tipo de conta",
     bodyHTML: tipoContaFormHTML(item),
     mount:(body)=>{
-      body.querySelector("#tc-cancel").addEventListener("click", closeModal);
+      body.querySelector("#tc-cancel").addEventListener("click", close);
       body.querySelector("#tipoconta-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const nome = body.querySelector("#tc-nome").value.trim();
         if(!nome) return;
+        const repetido = STATE.tiposConta.find(t=> normKey(t.nome)===normKey(nome) && (!item || t.id!==item.id));
+        if(repetido){ toast(`Já existe o tipo de conta "${repetido.nome}".`, true); return; }
         const payload = {
           nome,
           categoria_financeira: body.querySelector("#tc-categoria").value || null,
@@ -4237,9 +4433,12 @@ function openTipoContaModal(item, onSaved){
         const btn = body.querySelector("#tc-submit");
         btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Salvando...`;
         try{
-          if(item) await editTipoConta(item.id, payload);
-          else await addTipoConta(payload);
-          closeModal(); onSaved && onSaved();
+          let salvo;
+          if(item){
+            salvo = await editTipoConta(item.id, payload);
+            if(item.nome !== nome) await moverTipoConta(item.nome, nome);   // o nome novo acompanha todos os lançamentos/cadastros
+          } else salvo = await addTipoConta(payload);
+          close(); onSaved && onSaved(salvo);
         }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar tipo de conta`; }
       });
     }
@@ -4247,26 +4446,36 @@ function openTipoContaModal(item, onSaved){
 }
 function renderCadTiposConta(container){
   const sortState = { key:"nome", dir:"asc" };
-  const sortExtractors = { nome: c=>c.nome, categoria: c=>c.categoria_financeira, status: c=>c.status };
+  let usos = new Map();
+  const usoTotal = (c)=>{ const u = usos.get(normKey(c.nome)) || { lanc:0, cad:0 }; return u.lanc + u.cad; };
+  const sortExtractors = { nome: c=>c.nome, categoria: c=>c.categoria_financeira, uso: c=>usoTotal(c), status: c=>c.status };
 
   function refresh(){
+    usos = usoPorTipo();
     const dados = ordenarPor(STATE.tiposConta, sortState, sortExtractors);
+    const pendentes = categoriasAntigasPendentes().length;
     container.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
         <div>
           <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Tipo de Contas</h2>
-          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.tiposConta.length} tipo(s) cadastrado(s).</p>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.tiposConta.length} tipo(s) cadastrado(s) · o Tipo de Conta é o item (ex: ÁGUA); a Categoria Financeira é o grupo dele (ex: Operacional).</p>
         </div>
-        <button class="btn btn-primary" id="btn-novo-tipoconta">${icon("plus",16)} Novo tipo de conta</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          ${pendentes ? `<button class="btn btn-outline" id="btn-importar-antigas">${icon("download",15)} Importar categorias antigas (${pendentes})</button>` : ""}
+          <button class="btn btn-primary" id="btn-novo-tipoconta">${icon("plus",16)} Novo tipo de conta</button>
+        </div>
       </div>
       <div class="card" style="overflow-x:auto;">
         <table>
-          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Categoria Financeira","categoria",sortState)}${thSort("Status","status",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Categoria Financeira","categoria",sortState)}${thSort("Em uso","uso",sortState)}${thSort("Status","status",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
-            ${dados.map(c=>`
+            ${dados.map(c=>{
+              const u = usos.get(normKey(c.nome)) || { lanc:0, cad:0 };
+              return `
               <tr>
                 <td style="font-weight:500;color:#44403c;">${esc(c.nome)}</td>
-                <td style="color:#78716c;">${esc(c.categoria_financeira||"—")}</td>
+                <td style="color:${c.categoria_financeira?"#78716c":WARN};">${esc(c.categoria_financeira||SEM_CATFIN)}</td>
+                <td style="color:#a8a29e;font-size:12px;">${u.lanc||u.cad ? `${u.lanc} lanç.${u.cad?` · ${u.cad} cad.`:""}` : "—"}</td>
                 <td>${statusAtivoBadge(c.status)}</td>
                 <td>
                   <div style="display:flex;justify-content:flex-end;gap:2px;">
@@ -4274,7 +4483,7 @@ function renderCadTiposConta(container){
                     <button class="icon-btn danger del-tipoconta-btn" data-id="${c.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="4" class="empty">Nenhum tipo de conta cadastrado ainda.</td></tr>`}
+              </tr>`; }).join("") || `<tr><td colspan="5" class="empty">Nenhum tipo de conta cadastrado ainda.</td></tr>`}
           </tbody>
         </table>
       </div>`;
@@ -4282,14 +4491,13 @@ function renderCadTiposConta(container){
     wireSort(container, sortState, refresh);
     wireTopScroll(container);
     container.querySelector("#btn-novo-tipoconta").addEventListener("click", ()=> openTipoContaModal(null, refresh));
+    const imp = container.querySelector("#btn-importar-antigas");
+    if(imp) imp.addEventListener("click", ()=> openImportarCategoriasAntigasModal(refresh));
     container.querySelectorAll(".edit-tipoconta-btn").forEach(b=> b.addEventListener("click", ()=>{
       openTipoContaModal(STATE.tiposConta.find(c=>c.id===b.dataset.id), refresh);
     }));
     container.querySelectorAll(".del-tipoconta-btn").forEach(b=> b.addEventListener("click", ()=>{
-      const item = STATE.tiposConta.find(c=>c.id===b.dataset.id);
-      openConfirm(`Excluir o tipo de conta "${item.nome}"? Essa ação não pode ser desfeita.`, async ()=>{
-        try{ await deleteTipoConta(item.id); refresh(); }catch(err){ toast(err.message, true); }
-      });
+      abrirExclusaoTipoConta(STATE.tiposConta.find(c=>c.id===b.dataset.id), refresh);
     }));
   }
   refresh();
