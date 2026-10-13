@@ -249,49 +249,111 @@ const pluralContraparte = (tipoLanc) => tipoLanc==="entrada" ? "clientes" : "for
 function contraparteCampoHTML(id, tipoLanc, valor){
   const lbl = rotuloContraparte(tipoLanc);
   return `
-    <label class="field"><span class="field-label">${lbl}</span>
-      <input class="input" id="${id}" list="${id}-list" value="${esc(valor||"")}" placeholder="Digite para buscar no cadastro de ${pluralContraparte(tipoLanc)}..." autocomplete="off" required />
-      ${contrapartesDatalistHTML(id+"-list", listaContrapartes(tipoLanc))}
+    <div class="field">
+      <span class="field-label">${lbl}</span>
+      <input class="input" id="${id}" readonly value="${esc(valor||"")}" placeholder="Selecione o ${lbl.toLowerCase()}..." autocomplete="off"
+        style="cursor:pointer;padding-right:34px;background-image:url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2214%22 height=%2214%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2378716c%22 stroke-width=%222%22><polyline points=%226 9 12 15 18 9%22/></svg>');background-repeat:no-repeat;background-position:right 12px center;" />
       <span class="field-hint" id="${id}-msg" style="margin-top:5px;"></span>
       <button type="button" id="${id}-novo" style="border:none;background:none;font-size:11px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;padding:0;margin-top:3px;display:inline-flex;align-items:center;gap:3px;">${icon("plus",11)} Cadastrar novo ${lbl.toLowerCase()}</button>
-    </label>`;
+    </div>`;
 }
-/* nome oficial do cadastro (aceita nome ou nome fantasia); se não houver, devolve o texto digitado */
+/* nome oficial do cadastro (aceita nome ou nome fantasia); se não houver, devolve o texto atual do campo */
 function valorContraparte(body, id, tipoLanc){
   const v = body.querySelector("#"+id).value.trim();
   const c = cadastroPorNome(v, listaContrapartes(tipoLanc));
   return c ? c.nome : v;
 }
+/* Lista pesquisável: digitar só filtra a lista; o valor do campo só muda clicando em uma opção do cadastro. */
 function wireContraparteCampo(body, id, tipoLanc, valorOriginal){
   const inp = body.querySelector("#"+id), msg = body.querySelector("#"+id+"-msg");
-  const lbl = rotuloContraparte(tipoLanc).toLowerCase();
-  const validar = ()=>{
+  const plural = pluralContraparte(tipoLanc);
+  let panel = null, itens = [], ativo = 0;
+
+  const avisar = ()=>{
     const v = inp.value.trim();
-    if(!v){ inp.setCustomValidity(""); msg.innerHTML = ""; return; }
-    if(cadastroPorNome(v, listaContrapartes(tipoLanc))){ inp.setCustomValidity(""); msg.innerHTML = ""; return; }
-    if(valorOriginal && normKey(v)===normKey(valorOriginal)){ inp.setCustomValidity(""); msg.innerHTML = `<span style="color:${WARN};">Este nome não está no cadastro de ${pluralContraparte(tipoLanc)}. Cadastre-o para padronizar.</span>`; return; }
-    inp.setCustomValidity(`Escolha um ${lbl} da lista ou cadastre um novo.`);
-    msg.innerHTML = `<span style="color:${DANGER};">Não encontrado no cadastro de ${pluralContraparte(tipoLanc)} — escolha da lista ou cadastre um novo.</span>`;
+    if(v && !cadastroPorNome(v, listaContrapartes(tipoLanc))) msg.innerHTML = `<span style="color:${WARN};">Este nome não está no cadastro de ${plural}. Escolha da lista ou cadastre-o.</span>`;
+    else msg.innerHTML = "";
   };
-  inp.addEventListener("input", validar);
-  inp.addEventListener("change", ()=>{
-    const c = cadastroPorNome(inp.value, listaContrapartes(tipoLanc));
-    if(c) inp.value = c.nome;   // se digitou o nome fantasia, grava o nome do cadastro
-    validar();
-  });
-  validar();
+  const fechar = ()=>{
+    if(panel){ panel.remove(); panel = null; }
+    document.removeEventListener("mousedown", foraClick, true);
+    document.removeEventListener("scroll", fecharScroll, true);
+    window.removeEventListener("resize", fechar);
+  };
+  const foraClick = (e)=>{ if(panel && !panel.contains(e.target) && e.target!==inp) fechar(); };
+  const fecharScroll = (e)=>{ if(panel && !panel.contains(e.target)) fechar(); };
+  const escolher = (c)=>{
+    inp.value = c.nome; avisar(); fechar();
+    inp.dispatchEvent(new Event("change", { bubbles:true }));   // dispara a sugestão de Tipo de Conta do cadastro
+  };
+  const desenhar = (termo)=>{
+    const k = normKey(termo), kd = termo.replace(/\D/g,"");
+    itens = listaContrapartes(tipoLanc).filter(c=> !k || normKey(c.nome).includes(k) || normKey(c.nome_fantasia).includes(k) || (kd && String(c.documento||"").replace(/\D/g,"").includes(kd)))
+      .sort((a,b)=>(a.nome||"").localeCompare(b.nome||"")).slice(0,200);
+    ativo = 0;
+    const box = panel.querySelector(".ct-opcoes");
+    box.innerHTML = itens.map((c,i)=>`<div class="ct-opt" data-i="${i}" style="padding:8px 12px;cursor:pointer;font-size:14px;${i===ativo?`background:${BRAND[100]};`:""}">
+        <div style="color:#44403c;font-weight:500;">${esc(c.nome)}</div>
+        ${(c.nome_fantasia||c.documento) ? `<div style="font-size:11px;color:#a8a29e;">${esc([c.nome_fantasia, c.documento].filter(Boolean).join(" · "))}</div>` : ""}
+      </div>`).join("") || `<div style="padding:14px 12px;font-size:13px;color:#a8a29e;">Nenhum ${rotuloContraparte(tipoLanc).toLowerCase()} encontrado. Use "Cadastrar novo" abaixo do campo.</div>`;
+    box.querySelectorAll(".ct-opt").forEach(el=>{
+      el.addEventListener("mouseenter", ()=> marcar(parseInt(el.dataset.i,10)));
+      el.addEventListener("mousedown", (e)=>{ e.preventDefault(); escolher(itens[parseInt(el.dataset.i,10)]); });
+    });
+  };
+  const marcar = (i)=>{
+    if(!itens.length) return;
+    ativo = (i + itens.length) % itens.length;
+    panel.querySelectorAll(".ct-opt").forEach((el,j)=>{ el.style.background = j===ativo ? BRAND[100] : ""; if(j===ativo) el.scrollIntoView({block:"nearest"}); });
+  };
+  const abrir = ()=>{
+    if(panel) return;
+    const r = inp.getBoundingClientRect();
+    panel = document.createElement("div");
+    const abaixo = window.innerHeight - r.bottom;
+    const alto = 300;
+    panel.style.cssText = `position:fixed;left:${r.left}px;width:${r.width}px;z-index:80;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.18);overflow:hidden;` +
+      (abaixo >= alto || abaixo >= r.top ? `top:${r.bottom+4}px;` : `bottom:${window.innerHeight - r.top + 4}px;`);
+    panel.innerHTML = `<div style="padding:8px;border-bottom:1px solid var(--border);"><input class="input ct-busca" placeholder="Buscar por nome, nome fantasia ou CNPJ/CPF..." autocomplete="off" style="padding:7px 10px;font-size:13px;" /></div><div class="ct-opcoes" style="max-height:${alto-56}px;overflow-y:auto;"></div>`;
+    document.body.appendChild(panel);
+    const busca = panel.querySelector(".ct-busca");
+    desenhar("");
+    busca.addEventListener("input", ()=> desenhar(busca.value));
+    busca.addEventListener("keydown", (e)=>{
+      if(e.key==="ArrowDown"){ e.preventDefault(); marcar(ativo+1); }
+      else if(e.key==="ArrowUp"){ e.preventDefault(); marcar(ativo-1); }
+      else if(e.key==="Enter"){ e.preventDefault(); e.stopPropagation(); if(itens[ativo]) escolher(itens[ativo]); }
+      else if(e.key==="Escape"){ e.preventDefault(); e.stopPropagation(); fechar(); inp.focus(); }
+    });
+    document.addEventListener("mousedown", foraClick, true);
+    document.addEventListener("scroll", fecharScroll, true);
+    window.addEventListener("resize", fechar);
+    busca.focus();
+  };
+  inp.addEventListener("click", abrir);
+  inp.addEventListener("keydown", (e)=>{ if(["Enter"," ","ArrowDown"].includes(e.key)){ e.preventDefault(); abrir(); } });
+  avisar();
   body.querySelector("#"+id+"-novo").addEventListener("click", (e)=>{
     e.preventDefault();
     const aoSalvar = (salvo)=>{
       if(!salvo) return;
-      const dl = body.querySelector("#"+id+"-list");
-      if(dl) dl.outerHTML = contrapartesDatalistHTML(id+"-list", listaContrapartes(tipoLanc));
-      inp.value = salvo.nome; validar();
-      inp.dispatchEvent(new Event("change"));   // dispara a sugestão de Tipo de Conta do cadastro
+      inp.value = salvo.nome; avisar();
+      inp.dispatchEvent(new Event("change", { bubbles:true }));
     };
     if(tipoLanc==="entrada") openClienteModal(null, aoSalvar, { nested:true });
     else openFornecedorModal(null, aoSalvar, { nested:true });
   });
+  // fecha a lista se o modal for fechado
+  const mo = new MutationObserver(()=>{ if(!document.body.contains(inp)){ fechar(); mo.disconnect(); } });
+  mo.observe(document.body, { childList:true, subtree:true });
+}
+/* impede salvar sem escolher o cliente/fornecedor (o campo é somente leitura, então o "required" nativo não vale) */
+function exigirContraparte(body, id, tipoLanc){
+  const inp = body.querySelector("#"+id);
+  if(inp.value.trim()) return true;
+  body.querySelector("#"+id+"-msg").innerHTML = `<span style="color:${DANGER};">Escolha o ${rotuloContraparte(tipoLanc).toLowerCase()} na lista.</span>`;
+  inp.focus(); inp.scrollIntoView({ block:"center" });
+  return false;
 }
 
 /* ============================== Unidades (cadastro) e marca de "importado" ============================== */
@@ -1204,8 +1266,8 @@ const NAV_GROUPS = [
 // usuário não mudam.
 const FIN_SUBACESSOS = {
   "fin-dashboard": ["dashboard","cartoes-dashboard","vales-dashboard","fat-dashboard"],
-  "fin-entradas": ["entradas","vales-lancamentos","fat-entradas"],
-  "fin-saidas": ["saidas","cartoes-lancamentos","fat-saidas"],
+  "fin-entradas": ["fat-entradas","vales-lancamentos","entradas"],
+  "fin-saidas": ["fat-saidas","cartoes-lancamentos","saidas"],
   "fin-contas": ["contas","fat-contas"],
   "fin-personalizado": ["personalizado","fat-personalizado"],
   "fin-cadastros": ["cad-cartoes","cad-fornecedores","cad-clientes","cad-categorias-fin","cad-tipos-conta","cad-unidades"],
@@ -1222,14 +1284,14 @@ const PERMISSOES_GRUPOS = [
       {id:"fat-dashboard", label:"Contas a pagar"},
     ]},
     { label:"Contas a receber", items:[
-      {id:"entradas", label:"Carteira"},
+      {id:"fat-entradas", label:"Contas a receber"},
       {id:"vales-lancamentos", label:"Vales"},
-      {id:"fat-entradas", label:"Contas a pagar"},
+      {id:"entradas", label:"Carteira"},
     ]},
     { label:"Contas a pagar", items:[
-      {id:"saidas", label:"Carteira"},
-      {id:"cartoes-lancamentos", label:"Cartões"},
       {id:"fat-saidas", label:"Contas a pagar"},
+      {id:"cartoes-lancamentos", label:"Cartões"},
+      {id:"saidas", label:"Carteira"},
     ]},
     { label:"Visualização dos lançamentos", items:[
       {id:"contas", label:"Carteira"},
@@ -1409,16 +1471,16 @@ function renderFinDashboard(container){
 }
 function renderFinEntradas(container){
   renderComAbasDeConta(container, "entradas", [
-    {id:"entradas", label:"Carteira", acesso:"entradas", render:(c)=>renderLancamentosView(c,"entrada")},
+    {id:"fat-entradas", label:"Contas a receber", acesso:"fat-entradas", render:(c)=>renderFatLancamentosView(c,"entrada")},
     {id:"vales-lancamentos", label:"Vales", acesso:"vales-lancamentos", render:renderValesLancamentos},
-    {id:"fat-entradas", label:"Contas a pagar", acesso:"fat-entradas", render:(c)=>renderFatLancamentosView(c,"entrada")},
+    {id:"entradas", label:"Carteira", acesso:"entradas", render:(c)=>renderLancamentosView(c,"entrada")},
   ]);
 }
 function renderFinSaidas(container){
   renderComAbasDeConta(container, "saidas", [
-    {id:"saidas", label:"Carteira", acesso:"saidas", render:(c)=>renderLancamentosView(c,"saida")},
-    {id:"cartoes-lancamentos", label:"Cartões", acesso:"cartoes-lancamentos", render:renderCartoesLancamentos},
     {id:"fat-saidas", label:"Contas a pagar", acesso:"fat-saidas", render:(c)=>renderFatLancamentosView(c,"saida")},
+    {id:"cartoes-lancamentos", label:"Cartões", acesso:"cartoes-lancamentos", render:renderCartoesLancamentos},
+    {id:"saidas", label:"Carteira", acesso:"saidas", render:(c)=>renderLancamentosView(c,"saida")},
   ]);
 }
 function renderFinContas(container){
@@ -1564,6 +1626,7 @@ function openLancamentoModal(tipo, item, onSaved){
       body.querySelector("#lanc-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const valor = parseFloat(body.querySelector("#f-valor").value);
+        if(!exigirContraparte(body, "f-contraparte", tipo)) return;
         const contraparte = valorContraparte(body, "f-contraparte", tipo);
         const unidade = body.querySelector("#f-unidade").value.trim();
         if(!valor || valor<=0 || !contraparte || !unidade) return;
@@ -2813,6 +2876,7 @@ function openFatLancamentoModal(tipo, item, onSaved){
       body.querySelector("#fat-lanc-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const valor = parseFloat(body.querySelector("#ff-valor").value);
+        if(!exigirContraparte(body, "ff-contraparte", tipo)) return;
         const contraparte = valorContraparte(body, "ff-contraparte", tipo);
         const unidade = body.querySelector("#ff-unidade").value.trim();
         if(!valor || valor<=0 || !contraparte || !unidade) return;
