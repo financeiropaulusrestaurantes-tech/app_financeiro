@@ -437,10 +437,17 @@ function thCheckAll(){
 function tdCheck(id, selecionados){
   return `<td><input type="checkbox" class="row-check" data-id="${id}" ${selecionados.has(id)?"checked":""} style="width:15px;height:15px;cursor:pointer;" /></td>`;
 }
-function bulkBarHTML(selecionados, label){
+function somaSelecionados(selecionados, lista){
+  return (lista||[]).reduce((t,l)=> t + (selecionados.has(l.id) ? (Number(l.valor)||0) : 0), 0);
+}
+function selecaoSomaHTML(selecionados, lista, cor){
+  if(!selecionados || selecionados.size===0) return "";
+  return ` · <span style="background:${BRAND[50]};border:1px solid ${BRAND[200]};border-radius:6px;padding:1px 8px;color:${BRAND[800]};">Selecionados: ${selecionados.size} · <b style="color:${cor};">${currency(somaSelecionados(selecionados, lista))}</b></span>`;
+}
+function bulkBarHTML(selecionados, label, lista){
   if(selecionados.size===0) return "";
   return `<div class="card" style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 14px;margin-bottom:10px;background:${BRAND[50]};border-color:${BRAND[200]};">
-    <span style="font-size:13px;color:${BRAND[800]};font-weight:600;">${selecionados.size} selecionado(s)</span>
+    <span style="font-size:13px;color:${BRAND[800]};font-weight:600;">${selecionados.size} selecionado(s)${lista ? ` · Soma: ${currency(somaSelecionados(selecionados, lista))}` : ""}</span>
     <button type="button" class="btn btn-primary btn-bulk-quitar" style="padding:6px 14px;font-size:13px;">${icon("check",14)} ${esc(label)}</button>
   </div>`;
 }
@@ -1767,11 +1774,11 @@ function renderLancamentosView(container, tipo){
     Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
-    document.getElementById("lanc-summary").innerHTML = `${dados.length} lançamento(s) · Total realizado: <b style="color:${isEntrada?BRAND[600]:DANGER};">${currency(total)}</b>${saldoContasInlineHTML()}`;
+    document.getElementById("lanc-summary").innerHTML = `${dados.length} lançamento(s) · Total realizado: <b style="color:${isEntrada?BRAND[600]:DANGER};">${currency(total)}</b>${selecaoSomaHTML(selecionados, dadosOrdenados, isEntrada?BRAND[600]:DANGER)}${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("lanc-results");
     rows.innerHTML = `
-      ${bulkBarHTML(selecionados, `Marcar como ${isEntrada?"recebido":"pago"}`)}
+      ${bulkBarHTML(selecionados, `Marcar como ${isEntrada?"recebido":"pago"}`, dadosOrdenados)}
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
@@ -2334,11 +2341,11 @@ function renderCartoesLancamentos(container){
     Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
-    document.getElementById("cartao-summary").innerHTML = `${dados.length} lançamento(s) · Total pago: <b style="color:${DANGER};">${currency(total)}</b>${saldoContasInlineHTML()}`;
+    document.getElementById("cartao-summary").innerHTML = `${dados.length} lançamento(s) · Total pago: <b style="color:${DANGER};">${currency(total)}</b>${selecaoSomaHTML(selecionados, dadosOrdenados, DANGER)}${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("cartao-results");
     rows.innerHTML = `
-      ${bulkBarHTML(selecionados, "Marcar como pago")}
+      ${bulkBarHTML(selecionados, "Marcar como pago", dadosOrdenados)}
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
@@ -2664,11 +2671,11 @@ function renderValesLancamentos(container){
     Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const total = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
-    document.getElementById("vale-summary").innerHTML = `${dados.length} vale(s) · Total recebido: <b style="color:${BRAND[600]};">${currency(total)}</b>${saldoContasInlineHTML()}`;
+    document.getElementById("vale-summary").innerHTML = `${dados.length} vale(s) · Total recebido: <b style="color:${BRAND[600]};">${currency(total)}</b>${selecaoSomaHTML(selecionados, dadosOrdenados, BRAND[600])}${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("vale-results");
     rows.innerHTML = `
-      ${bulkBarHTML(selecionados, "Marcar como recebido")}
+      ${bulkBarHTML(selecionados, "Marcar como recebido", dadosOrdenados)}
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
@@ -2928,9 +2935,8 @@ function renderFatLancamentosView(container, tipo){
   listaContrapartes(tipo).forEach(c=>{ if(c.documento){ docPorNome.set(normKey(c.nome), c.documento); if(c.nome_fantasia) docPorNome.set(normKey(c.nome_fantasia), c.documento); } });
   const docDe = (l) => docPorNome.get(normKey(l.contraparte)) || "";
   const filters = { busca:"", de:"", ate:"", unidade:"", categoria:"", status:"" };
-  const sortState = { key:"data", dir:"desc" };
+  const sortState = { key:"vencimento", dir:"desc" };
   const sortExtractors = {
-    data: l => l.data_realizada || l.data_prevista,
     status: l => l.status,
     categoria: l => l.categoria,
     contraparte: l => l.contraparte,
@@ -2961,8 +2967,8 @@ function renderFatLancamentosView(container, tipo){
           <input class="input" style="padding-left:30px;" id="ffl-busca" placeholder="Buscar ${contraLabel.toLowerCase()} ou observação" />
         </div>
       </div>
-      <div><span class="field-label">De</span><input class="input" type="date" id="ffl-de" /></div>
-      <div><span class="field-label">Até</span><input class="input" type="date" id="ffl-ate" /></div>
+      <div><span class="field-label">Vencimento de</span><input class="input" type="date" id="ffl-de" /></div>
+      <div><span class="field-label">Vencimento até</span><input class="input" type="date" id="ffl-ate" /></div>
       <div><span class="field-label">Unidade</span>
         <select class="input" id="ffl-unidade"><option value="">Todas</option>${unidades.map(u=>`<option value="${esc(u)}">${esc(u)}</option>`).join("")}</select></div>
       <div><span class="field-label">Categoria Financeira</span>
@@ -2974,7 +2980,7 @@ function renderFatLancamentosView(container, tipo){
 
   function refresh(){
     const dados = STATE.faturamentoLancamentos.filter(l=>l.tipo===tipo).filter(l=>{
-      const dataRef = l.data_realizada || l.data_prevista;
+      const dataRef = vencimentoFat(l) || "";
       if(filters.busca){ const alvo = `${l.contraparte} ${l.observacao} ${l.numero_duplicata||""}`.toLowerCase(); if(!alvo.includes(filters.busca.toLowerCase())) return false; }
       if(filters.de && dataRef < filters.de) return false;
       if(filters.ate && dataRef > filters.ate) return false;
@@ -2991,18 +2997,18 @@ function renderFatLancamentosView(container, tipo){
     const totalRealizado = dados.reduce((s,l)=> s + (l.status==="realizado"?l.valor:0), 0);
     const totalPrevisto = dados.reduce((s,l)=> s + (l.status==="previsto"?l.valor:0), 0);
     const corPrincipal = isEntrada?BRAND[600]:DANGER;
-    document.getElementById("fat-lanc-summary").innerHTML = `${dados.length} lançamento(s) selecionado(s) · Soma do filtro: <b style="color:${corPrincipal};">${currency(totalFiltrado)}</b> <span class="muted">(Realizado: ${currency(totalRealizado)} · Previsto: ${currency(totalPrevisto)})</span>${saldoContasInlineHTML()}`;
+    document.getElementById("fat-lanc-summary").innerHTML = `${dados.length} lançamento(s) no filtro · Soma do filtro: <b style="color:${corPrincipal};">${currency(totalFiltrado)}</b> <span class="muted">(Realizado: ${currency(totalRealizado)} · Previsto: ${currency(totalPrevisto)})</span>${selecaoSomaHTML(selecionados, dadosOrdenados, corPrincipal)}${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("fat-lanc-results");
     rows.innerHTML = `
-      ${bulkBarHTML(selecionados, `Marcar como ${isEntrada?"realizado":"pago"}`)}
+      ${bulkBarHTML(selecionados, `Marcar como ${isEntrada?"realizado":"pago"}`, dadosOrdenados)}
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>
             ${thCheckAll()}${thSort("Vencimento","vencimento",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort(contraLabel,"contraparte",sortState)}
-            ${thSort("Data","data",sortState)}${thSort("Status","status",sortState)}${thSort("Tipo de Conta","categoria",sortState)}
+            ${thSort("Status","status",sortState)}${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Tipo de Conta","categoria",sortState)}
             ${!isEntrada ? `${thSort("Unidade","unidade",sortState)}${thSort("Duplicata","duplicata",sortState)}` : `<th>Prazo</th>`}
-            ${thSort("Valor","valor",sortState,"text-align:right;")}${thSort("Observações","observacao",sortState)}<th style="text-align:right;">Ações</th>
+            ${thSort("Observações","observacao",sortState)}<th style="text-align:right;">Ações</th>
           </tr></thead>
           <tbody>
             ${dadosOrdenados.map(l=>`
@@ -3011,11 +3017,10 @@ function renderFatLancamentosView(container, tipo){
                 <td style="white-space:nowrap;">${fmtDate(vencimentoFat(l))}</td>
                 <td style="white-space:nowrap;color:#78716c;">${esc(docDe(l)||"—")}</td>
                 <td style="font-weight:500;color:#44403c;">${importadoIconHTML(l)}${esc(l.contraparte)}</td>
-                <td style="white-space:nowrap;color:#78716c;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
+                <td style="text-align:right;font-weight:600;color:${isEntrada?BRAND[600]:DANGER};">${currency(l.valor)}</td>
                 <td>${tipoCellHTML(l.categoria)}</td>
                 ${!isEntrada ? `<td style="color:#78716c;">${esc(l.unidade||"—")}</td><td style="color:#78716c;font-size:12px;">${l.duplicata ? esc(l.numero_duplicata||"Sim") : "—"}</td>` : `<td>${prazoBadge(l)}</td>`}
-                <td style="text-align:right;font-weight:600;color:${isEntrada?BRAND[600]:DANGER};">${currency(l.valor)}</td>
                 <td style="color:#a8a29e;font-size:12px;">${esc(l.observacao||"—")}</td>
                 <td>
                   <div style="display:flex;justify-content:flex-end;gap:2px;">
@@ -3023,7 +3028,7 @@ function renderFatLancamentosView(container, tipo){
                     <button class="icon-btn danger del-fat-btn" data-id="${l.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="${isEntrada?11:12}" class="empty">Nenhum lançamento encontrado para os filtros aplicados.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="${isEntrada?10:11}" class="empty">Nenhum lançamento encontrado para os filtros aplicados.</td></tr>`}
           </tbody>
         </table>
       </div>`;
@@ -3420,12 +3425,13 @@ function fatLancamentoDetalheHTML(l){
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         ${campoDetalheFat("Valor", `<b>${currency(l.valor)}</b>`)}
-        ${campoDetalheFat(l.status==="realizado" ? "Data de realização" : "Data prevista", fmtDate(l.data_realizada||l.data_prevista))}
+        ${campoDetalheFat("Vencimento", fmtDate(l.data_vencimento||l.data_prevista))}
       </div>
-      ${isEntrada && l.data_vencimento ? `<div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campoDetalheFat("Vencimento do faturamento", fmtDate(l.data_vencimento))}
-        ${campoDetalheFat("Prazo", prazoBadge(l))}
-      </div>` : ""}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campoDetalheFat("Data prevista", fmtDate(l.data_prevista))}
+        ${campoDetalheFat("Data de realização", l.data_realizada ? fmtDate(l.data_realizada) : "—")}
+      </div>
+      ${isEntrada && l.data_vencimento ? campoDetalheFat("Prazo", prazoBadge(l)) : ""}
       ${!isEntrada && l.duplicata ? campoDetalheFat("Nº da duplicata", esc(l.numero_duplicata||"—")) : ""}
       ${campoDetalheFat("Observação", esc(l.observacao||"—"))}
       <div style="border-top:1px solid var(--border);padding-top:10px;">
@@ -3520,7 +3526,7 @@ function renderFatDuplicatas(container){
     Array.from(selecionados).forEach(id=>{ if(!elegiveis.includes(id)) selecionados.delete(id); });
 
     const totalAberto = duplicatas.filter(l=>l.status==="previsto").reduce((s,l)=>s+l.valor,0);
-    document.getElementById("dup-summary").innerHTML = `${duplicatas.length} duplicata(s) encontrada(s) · Em aberto: <b style="color:${DANGER};">${currency(totalAberto)}</b>${saldoContasInlineHTML()}`;
+    document.getElementById("dup-summary").innerHTML = `${duplicatas.length} duplicata(s) encontrada(s) · Em aberto: <b style="color:${DANGER};">${currency(totalAberto)}</b>${selecaoSomaHTML(selecionados, duplicatasOrdenadas, DANGER)}${saldoContasInlineHTML()}`;
 
     const rows = document.getElementById("dup-results");
     rows.innerHTML = `
@@ -3528,7 +3534,7 @@ function renderFatDuplicatas(container){
         <button type="button" class="btn btn-outline" id="btn-importar-dup" style="padding:6px 14px;font-size:13px;">${icon("plus",14)} Importar planilha</button>
         <button type="button" class="btn btn-outline" id="btn-exportar-dup-xml" style="padding:6px 14px;font-size:13px;">${icon("download",14)} Exportar XML</button>
       </div>
-      ${bulkBarHTML(selecionados, "Marcar como pago")}
+      ${bulkBarHTML(selecionados, "Marcar como pago", duplicatasOrdenadas)}
       <div class="card" style="overflow-x:auto;">
         <table>
           <thead><tr>${thCheckAll()}${thSort("Vencimento","vencimento",sortState)}${thSort("Status","status",sortState)}${thSort("Nº Duplicata","numero",sortState)}${thSort("Fornecedor","contraparte",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Valor","valor",sortState,"text-align:right;")}<th style="text-align:right;">Ações</th></tr></thead>
