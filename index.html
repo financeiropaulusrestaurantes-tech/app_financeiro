@@ -3893,8 +3893,12 @@ function fornecedorFormHTML(item){
         </label>
         ${tipoContaCampoHTML("ff-categoria", item?item.tipo_conta:"", { required:false })}
       </div>
-      <label class="field"><span class="field-label">Unidade padrão</span>
-        <input class="input" id="ff-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        <label class="field"><span class="field-label">Inscrição Estadual</span>
+          <input class="input" id="ff-ie" placeholder="ex: 123.456.789.110 ou ISENTO" value="${esc(item?item.inscricao_estadual||"":"")}" /></label>
+        <label class="field"><span class="field-label">Unidade padrão</span>
+          <input class="input" id="ff-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
+      </div>
       <label class="field"><span class="field-label">Observações</span>
         <textarea class="input" id="ff-obs" rows="3">${esc(item?item.observacoes||"":"")}</textarea></label>
       <p class="field-hint" style="margin-top:-8px;">"Consultar" busca os dados do CNPJ na Receita Federal e preenche nome, telefone e observações (endereço) automaticamente.</p>
@@ -3925,6 +3929,7 @@ function openFornecedorModal(item, onSaved, { nested=false }={}){
           telefone: body.querySelector("#ff-telefone").value.trim(),
           email: body.querySelector("#ff-email").value.trim(),
           documento: body.querySelector("#ff-documento").value.trim(),
+          inscricao_estadual: body.querySelector("#ff-ie").value.trim() || null,
           tipo_conta: body.querySelector("#ff-categoria").value.trim() || null,
           unidade_padrao: body.querySelector("#ff-unidade").value.trim(),
           observacoes: body.querySelector("#ff-obs").value.trim(),
@@ -3936,7 +3941,7 @@ function openFornecedorModal(item, onSaved, { nested=false }={}){
           if(item) salvo = await editFornecedor(item.id, payload);
           else salvo = await addFornecedor(payload);
           close(); onSaved && onSaved(salvo);
-        }catch(err){ toast(/tipo_conta/.test(err.message) ? "Falta criar a coluna tipo_conta no Supabase — rode o arquivo sql_tipo_conta_cliente_fornecedor.sql." : err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar fornecedor`; }
+        }catch(err){ toast(/inscricao_estadual/.test(err.message) ? "Falta criar a coluna da Inscrição Estadual no Supabase — rode o arquivo sql_inscricao_estadual.sql." : /tipo_conta/.test(err.message) ? "Falta criar a coluna tipo_conta no Supabase — rode o arquivo sql_tipo_conta_cliente_fornecedor.sql." : err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar fornecedor`; }
       });
     }
   });
@@ -3953,9 +3958,12 @@ function fornecedorDetalheHTML(f){
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         ${campo("CNPJ/CPF", f.documento)}
-        ${campo("Tipo de Conta", f.tipo_conta ? tipoDetalheTexto(f.tipo_conta) : "")}
+        ${campo("Inscrição Estadual", f.inscricao_estadual)}
       </div>
-      ${campo("Unidade padrão", f.unidade_padrao)}
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
+        ${campo("Tipo de Conta", f.tipo_conta ? tipoDetalheTexto(f.tipo_conta) : "")}
+        ${campo("Unidade padrão", f.unidade_padrao)}
+      </div>
       ${campo("Observações", f.observacoes)}
       <div style="border-top:1px solid var(--border);padding-top:10px;">
         <span class="field-label">Cadastrado por</span>
@@ -3984,7 +3992,7 @@ function renderCadFornecedores(container){
   const sortState = { key:"nome", dir:"asc" };
   const sortExtractors = {
     nome: f=>f.nome, nomeFantasia: f=>f.nome_fantasia, telefone: f=>f.telefone, observacoes: f=>f.observacoes,
-    documento: f=>f.documento, categoria: f=>f.tipo_conta, unidade: f=>f.unidade_padrao, usuario: f=>f.usuario_nome,
+    documento: f=>f.documento, ie: f=>f.inscricao_estadual, categoria: f=>f.tipo_conta, unidade: f=>f.unidade_padrao, usuario: f=>f.usuario_nome,
   };
 
   function refresh(){
@@ -3999,7 +4007,7 @@ function renderCadFornecedores(container){
       </div>
       <div class="card" style="overflow-x:auto;">
         <table>
-          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Nome fantasia","nomeFantasia",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
+          <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Nome fantasia","nomeFantasia",sortState)}${thSort("Telefone","telefone",sortState)}${thSort("Observações","observacoes",sortState)}${thSort("CNPJ/CPF","documento",sortState)}${thSort("Inscrição Estadual","ie",sortState)}${thSort("Tipo de Conta","categoria",sortState)}${thSort("Unidade","unidade",sortState)}${thSort("Cadastrado por","usuario",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${dados.map(f=>`
               <tr class="fornecedor-row" data-id="${f.id}" style="cursor:pointer;">
@@ -4008,6 +4016,7 @@ function renderCadFornecedores(container){
                 <td style="color:#78716c;">${esc(f.telefone||"—")}</td>
                 <td style="color:#78716c;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(f.observacoes||"")}">${esc(f.observacoes||"—")}</td>
                 <td style="color:#78716c;">${esc(f.documento||"—")}</td>
+                <td style="color:#78716c;white-space:nowrap;">${esc(f.inscricao_estadual||"—")}</td>
                 <td>${f.tipo_conta ? tipoCellHTML(f.tipo_conta) : `<span style="color:#a8a29e;">—</span>`}</td>
                 <td style="color:#78716c;">${esc(f.unidade_padrao||"—")}</td>
                 <td style="color:#a8a29e;font-size:12px;">${esc(f.usuario_nome||"—")}</td>
@@ -4017,7 +4026,7 @@ function renderCadFornecedores(container){
                     <button class="icon-btn danger del-fornecedor-btn" data-id="${f.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`).join("") || `<tr><td colspan="9" class="empty">Nenhum fornecedor cadastrado ainda.</td></tr>`}
+              </tr>`).join("") || `<tr><td colspan="10" class="empty">Nenhum fornecedor cadastrado ainda.</td></tr>`}
           </tbody>
         </table>
       </div>`;
