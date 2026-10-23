@@ -4769,8 +4769,13 @@ function unidadeFormHTML(item){
     </form>`;
 }
 function semTabelaUnidadesMsg(err){
-  return /unidades/.test(err.message) && /(relation|table|schema cache|does not exist)/i.test(err.message)
-    ? "A tabela de unidades ainda não existe no Supabase — rode o arquivo sql_unidades.sql." : err.message;
+  const m = String(err && err.message || err || "");
+  if(/could not find the table|relation .*unidades.* does not exist|unidades.*does not exist/i.test(m))
+    return "A tabela de unidades ainda não existe no Supabase — rode o arquivo sql_unidades.sql. (Detalhe: "+m+")";
+  if(/permission denied/i.test(m))
+    return "O Supabase negou a permissão na tabela de unidades — rode o arquivo sql_unidades.sql de novo (ele libera o acesso). (Detalhe: "+m+")";
+  if(/duplicate key|unique/i.test(m)) return "Já existe uma unidade com esse nome.";
+  return "Não foi possível salvar a unidade. Detalhe: "+m;
 }
 function openUnidadeModal(item, onSaved, { nested=false }={}){
   const open = nested ? openNestedModal : openModal;
