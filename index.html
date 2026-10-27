@@ -142,24 +142,50 @@ const catsForFat = (tipo) => catsFor("fat_"+tipo);
    é sempre descoberta a partir do cadastro de Tipo de Contas (nada duplicado nos lançamentos). */
 const SEM_CATFIN = "Sem categoria financeira";
 const normKey = (s) => String(s==null?"":s).normalize("NFD").replace(/[̀-ͯ]/g,"").toLowerCase().replace(/\s+/g," ").trim();
+/* Cada Tipo de Conta pertence a um lado: "receber" (Contas a receber, Vales, Carteira-entradas, Clientes)
+   ou "pagar" (Contas a pagar, Cartões, Carteira-saídas, Fornecedores). Os tipos que já existiam antes da
+   separação ficam como "pagar". */
+const normLado = (x) => (x==="entrada"||x==="receber") ? "receber" : (x==="saida"||x==="pagar") ? "pagar" : null;
+const ladoDoTipo = (t) => normLado(t && t.lado) || "pagar";
+const rotuloLado = (lado) => normLado(lado)==="receber" ? "a receber" : "a pagar";
+/* lado de um lançamento: Carteira/Faturamento têm "tipo"; Cartão tem "cartao"; Vale tem "origem" */
+function ladoDoRegistro(l){
+  if(!l) return null;
+  if(l.tipo) return normLado(l.tipo);
+  if("cartao" in l || "portador" in l) return "pagar";
+  if("origem" in l) return "receber";
+  return null;
+}
 let _tcMemo = { ref:null, map:null };
 function tipoContaMap(){
   if(_tcMemo.ref !== STATE.tiposConta || !_tcMemo.map){
     const m = new Map();
-    (STATE.tiposConta||[]).forEach(t=> m.set(normKey(t.nome), t));
+    (STATE.tiposConta||[]).forEach(t=>{
+      const k = normKey(t.nome);
+      m.set(ladoDoTipo(t)+"|"+k, t);
+      if(!m.has("*|"+k)) m.set("*|"+k, t);   // reserva: o mesmo nome em qualquer lado
+    });
     _tcMemo = { ref:STATE.tiposConta, map:m };
   }
   return _tcMemo.map;
 }
-const tipoContaPorNome = (nome) => nome ? (tipoContaMap().get(normKey(nome)) || null) : null;
-const categoriaFinDoTipo = (nome) => (tipoContaPorNome(nome)||{}).categoria_financeira || null;
-const grupoDe = (l) => categoriaFinDoTipo(l && l.categoria) || SEM_CATFIN;
+/* Sem "estrito": se o nome não existir no lado pedido, usa o do outro lado (assim lançamentos antigos
+   continuam com a Categoria Financeira até o tipo ser cadastrado no lado certo). */
+function tipoContaPorNome(nome, lado=null, { estrito=false }={}){
+  if(!nome) return null;
+  const k = normKey(nome), L = normLado(lado), m = tipoContaMap();
+  if(L){ const t = m.get(L+"|"+k); if(t || estrito) return t || null; }
+  return m.get("*|"+k) || null;
+}
+const categoriaFinDoTipo = (nome, lado=null) => (tipoContaPorNome(nome, lado)||{}).categoria_financeira || null;
+const grupoDe = (l) => categoriaFinDoTipo(l && l.categoria, ladoDoRegistro(l)) || SEM_CATFIN;
 const GRUPOS_RECEITA = ["Receitas Operacionais","Outras Receitas","Aportes e Empréstimos","Vales Recebidos"];
 
 /* <option>s do select de Tipo de Conta, agrupados por Categoria Financeira. */
 function tipoContaOptionsHTML(selected, { lado=null, excluir=null }={}){
+  const L = normLado(lado);
   const exclKey = excluir ? normKey(excluir) : null;
-  const tipos = (STATE.tiposConta||[]).filter(t=> (t.status!=="inativo" || normKey(t.nome)===normKey(selected)) && normKey(t.nome)!==exclKey);
+  const tipos = (STATE.tiposConta||[]).filter(t=> (!L || ladoDoTipo(t)===L) && (t.status!=="inativo" || normKey(t.nome)===normKey(selected)) && normKey(t.nome)!==exclKey);
   const ordemCat = (STATE.categoriasFinanceiras||[]).map(c=>c.categoria);
   const grupos = new Map();
   tipos.forEach(t=>{
@@ -169,14 +195,10 @@ function tipoContaOptionsHTML(selected, { lado=null, excluir=null }={}){
   });
   let nomesGrupos = [...ordemCat.filter(g=>grupos.has(g))];
   if(grupos.has(SEM_CATFIN)) nomesGrupos.push(SEM_CATFIN);
-  if(lado){
-    const eReceita = (g)=> GRUPOS_RECEITA.includes(g);
-    nomesGrupos = [...nomesGrupos.filter(g=> lado==="entrada" ? eReceita(g) : !eReceita(g)), ...nomesGrupos.filter(g=> lado==="entrada" ? !eReceita(g) : eReceita(g))];
-  }
   const selKey = normKey(selected);
-  const achou = !!(selected && tipoContaPorNome(selected));
+  const achou = !!(selected && tipoContaPorNome(selected, L, { estrito:true }));
   let html = `<option value="">Selecione...</option>`;
-  if(selected && !achou) html += `<option value="${esc(selected)}" selected>${esc(selected)} (sem cadastro em Tipo de Conta)</option>`;
+  if(selected && !achou) html += `<option value="${esc(selected)}" selected>${esc(selected)} (${L ? "fora dos tipos de conta "+rotuloLado(L) : "sem cadastro em Tipo de Conta"})</option>`;
   nomesGrupos.forEach(g=>{
     html += `<optgroup label="${esc(g)}">` + grupos.get(g).sort((a,b)=>(a.nome||"").localeCompare(b.nome||"")).map(t=>`<option value="${esc(t.nome)}" ${selKey && normKey(t.nome)===selKey?"selected":""}>${esc(t.nome)}${t.status==="inativo"?" (inativo)":""}</option>`).join("") + `</optgroup>`;
   });
@@ -184,25 +206,24 @@ function tipoContaOptionsHTML(selected, { lado=null, excluir=null }={}){
 }
 /* Campo completo: select + "Categoria financeira: X" automática + atalho para cadastrar novo tipo. */
 function tipoContaCampoHTML(id, selected, { lado=null, label="Tipo de Conta", required=true }={}){
-  const cat = categoriaFinDoTipo(selected);
   return `
     <label class="field">
       <span class="field-label">${esc(label)}</span>
       <select class="input" id="${id}" ${required?"required":""}>${tipoContaOptionsHTML(selected, { lado })}</select>
-      <span class="field-hint" id="${id}-catfin" style="margin-top:5px;">${catfinHintTexto(selected)}</span>
+      <span class="field-hint" id="${id}-catfin" style="margin-top:5px;">${catfinHintTexto(selected, lado)}</span>
       <button type="button" id="${id}-novo" style="border:none;background:none;font-size:11px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;padding:0;margin-top:3px;display:inline-flex;align-items:center;gap:3px;">${icon("plus",11)} Cadastrar novo tipo de conta</button>
     </label>`;
 }
-function catfinHintTexto(nomeTipo){
+function catfinHintTexto(nomeTipo, lado=null){
   if(!nomeTipo) return `Categoria financeira: <b>—</b> <span style="color:#a8a29e;">(preenchida automaticamente)</span>`;
-  const cat = categoriaFinDoTipo(nomeTipo);
+  const cat = categoriaFinDoTipo(nomeTipo, lado);
   return `Categoria financeira: <b style="color:${cat?BRAND[700]:WARN};">${esc(cat||SEM_CATFIN)}</b>`;
 }
 function wireTipoContaCampo(body, id, { lado=null }={}){
   const sel = body.querySelector("#"+id);
   const hint = body.querySelector("#"+id+"-catfin");
   if(!sel) return;
-  const atualizar = ()=>{ hint.innerHTML = catfinHintTexto(sel.value); };
+  const atualizar = ()=>{ hint.innerHTML = catfinHintTexto(sel.value, lado); };
   sel.addEventListener("change", atualizar);
   const novo = body.querySelector("#"+id+"-novo");
   if(novo) novo.addEventListener("click", (e)=>{
@@ -210,15 +231,15 @@ function wireTipoContaCampo(body, id, { lado=null }={}){
     openTipoContaModal(null, (salvo)=>{
       sel.innerHTML = tipoContaOptionsHTML(salvo ? salvo.nome : sel.value, { lado });
       atualizar();
-    }, { nested:true });
+    }, { nested:true, lado });
   });
 }
 /* Célula de tabela: Tipo de Conta + Categoria Financeira em cinza embaixo. */
-function tipoCellHTML(nome){
-  const cat = categoriaFinDoTipo(nome);
+function tipoCellHTML(nome, lado=null){
+  const cat = categoriaFinDoTipo(nome, lado);
   return `<div style="color:#44403c;">${esc(nome||"—")}</div><div style="font-size:11px;color:${cat?"#a8a29e":WARN};">${esc(cat||SEM_CATFIN)}</div>`;
 }
-const tipoDetalheTexto = (nome) => { const c = categoriaFinDoTipo(nome); return `${nome||"—"} · ${c||SEM_CATFIN}`; };
+const tipoDetalheTexto = (nome, lado=null) => { const c = categoriaFinDoTipo(nome, lado); return `${nome||"—"} · ${c||SEM_CATFIN}`; };
 
 /* ---- Tipo de Conta sugerido pelo cadastro do cliente/fornecedor escolhido no lançamento ---- */
 const cadastroPorNome = (nome, lista) => { const k = normKey(nome); return k ? ((lista||[]).find(x=> normKey(x.nome)===k || normKey(x.nome_fantasia)===k) || null) : null; };
@@ -236,7 +257,7 @@ function wireTipoContaDoCadastro(body, inputId, selectId, getLista, { lado=null 
     const c = cadastroPorNome(inp.value, getLista());
     if(!c || !c.tipo_conta) return;
     sel.innerHTML = tipoContaOptionsHTML(c.tipo_conta, { lado });
-    hint.innerHTML = catfinHintTexto(sel.value) + ` <span style="color:#a8a29e;">· sugerido pelo cadastro de ${esc(c.nome)}</span>`;
+    hint.innerHTML = catfinHintTexto(sel.value, lado) + ` <span style="color:#a8a29e;">· sugerido pelo cadastro de ${esc(c.nome)}</span>`;
   };
   inp.addEventListener("change", aplicar);
   inp.addEventListener("input", (e)=>{ if(!e.inputType || e.inputType==="insertReplacementText") aplicar(); });  // escolha na lista de sugestões
@@ -364,6 +385,102 @@ function unidadesConhecidas(lancs){
   unidadesAtivas().forEach(u=> mapa.set(normKey(u.nome), u.nome));
   (lancs||[]).forEach(l=>{ const n = String(l.unidade||"").trim(); if(n && !mapa.has(normKey(n))) mapa.set(normKey(n), n); });
   return Array.from(mapa.values()).sort((a,b)=>a.localeCompare(b));
+}
+/* Unidade escolhida SOMENTE entre as do cadastro: mesma lista pesquisável de Cliente/Fornecedor
+   (digitar só filtra a lista; o valor muda apenas clicando numa opção). */
+function unidadeSelectHTML(id, atual, { opcional=false }={}){
+  const vazio = unidadesAtivas().length===0;
+  return `
+    <input class="input" id="${id}" readonly value="${esc(atual||"")}" placeholder="${opcional?"Sem unidade (clique para escolher)":"Selecione a unidade..."}" autocomplete="off"
+      style="cursor:pointer;padding-right:34px;background-image:url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2214%22 height=%2214%22 viewBox=%220 0 24 24%22 fill=%22none%22 stroke=%22%2378716c%22 stroke-width=%222%22><polyline points=%226 9 12 15 18 9%22/></svg>');background-repeat:no-repeat;background-position:right 12px center;" />
+    <span class="field-hint" id="${id}-msg" style="margin-top:5px;${vazio?`color:${DANGER};`:""}">${vazio ? "Nenhuma unidade cadastrada ainda — use o link abaixo ou vá em Cadastros → Unidades." : ""}</span>
+    <button type="button" id="${id}-nova" style="border:none;background:none;font-size:11px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;padding:0;margin-top:3px;display:inline-flex;align-items:center;gap:3px;">${icon("plus",11)} Cadastrar nova unidade</button>`;
+}
+/* impede salvar sem escolher a unidade (o campo é somente leitura, então o "required" nativo não vale) */
+function exigirUnidade(body, id){
+  const inp = body.querySelector("#"+id);
+  if(inp.value.trim()) return true;
+  body.querySelector("#"+id+"-msg").innerHTML = `<span style="color:${DANGER};">Escolha a unidade na lista.</span>`;
+  inp.focus(); inp.scrollIntoView({ block:"center" });
+  return false;
+}
+function wireUnidadeSelect(body, id, { opcional=false }={}){
+  const inp = body.querySelector("#"+id), msg = body.querySelector("#"+id+"-msg");
+  let panel = null, itens = [], ativo = 0;
+  const avisar = ()=>{
+    const v = inp.value.trim();
+    if(v && !unidadesAtivas().some(u=> normKey(u.nome)===normKey(v))) msg.innerHTML = `<span style="color:${WARN};">Esta unidade não está no cadastro. Escolha uma da lista.</span>`;
+    else if(unidadesAtivas().length) msg.innerHTML = "";
+  };
+  const fechar = ()=>{
+    if(panel){ panel.remove(); panel = null; }
+    document.removeEventListener("mousedown", foraClick, true);
+    document.removeEventListener("scroll", fecharScroll, true);
+    window.removeEventListener("resize", fechar);
+  };
+  const foraClick = (e)=>{ if(panel && !panel.contains(e.target) && e.target!==inp) fechar(); };
+  const fecharScroll = (e)=>{ if(panel && !panel.contains(e.target)) fechar(); };
+  const escolher = (u)=>{
+    inp.value = u ? u.nome : ""; avisar(); fechar();
+    inp.dispatchEvent(new Event("change", { bubbles:true }));
+  };
+  const desenhar = (termo)=>{
+    const k = normKey(termo);
+    itens = unidadesAtivas().filter(u=> !k || normKey(u.nome).includes(k) || normKey(u.descricao).includes(k))
+      .sort((a,b)=>(a.nome||"").localeCompare(b.nome||"")).slice(0,200);
+    if(opcional && !k) itens = [null, ...itens];       // "Sem unidade" no topo
+    ativo = 0;
+    const box = panel.querySelector(".ct-opcoes");
+    box.innerHTML = itens.map((u,i)=> u===null
+      ? `<div class="ct-opt" data-i="${i}" style="padding:8px 12px;cursor:pointer;font-size:14px;color:#a8a29e;${i===ativo?`background:${BRAND[100]};`:""}">Sem unidade</div>`
+      : `<div class="ct-opt" data-i="${i}" style="padding:8px 12px;cursor:pointer;font-size:14px;${i===ativo?`background:${BRAND[100]};`:""}">
+          <div style="color:#44403c;font-weight:500;">${esc(u.nome)}</div>
+          ${u.descricao ? `<div style="font-size:11px;color:#a8a29e;">${esc(u.descricao)}</div>` : ""}
+        </div>`).join("") || `<div style="padding:14px 12px;font-size:13px;color:#a8a29e;">Nenhuma unidade encontrada. Use "Cadastrar nova unidade" abaixo do campo.</div>`;
+    box.querySelectorAll(".ct-opt").forEach(el=>{
+      el.addEventListener("mouseenter", ()=> marcar(parseInt(el.dataset.i,10)));
+      el.addEventListener("mousedown", (e)=>{ e.preventDefault(); escolher(itens[parseInt(el.dataset.i,10)]); });
+    });
+  };
+  const marcar = (i)=>{
+    if(!itens.length) return;
+    ativo = (i + itens.length) % itens.length;
+    panel.querySelectorAll(".ct-opt").forEach((el,j)=>{ el.style.background = j===ativo ? BRAND[100] : ""; if(j===ativo) el.scrollIntoView({block:"nearest"}); });
+  };
+  const abrir = ()=>{
+    if(panel) return;
+    const r = inp.getBoundingClientRect();
+    panel = document.createElement("div");
+    const abaixo = window.innerHeight - r.bottom;
+    const alto = 300;
+    panel.style.cssText = `position:fixed;left:${r.left}px;width:${r.width}px;z-index:80;background:#fff;border:1px solid var(--border);border-radius:10px;box-shadow:0 12px 30px rgba(0,0,0,.18);overflow:hidden;` +
+      (abaixo >= alto || abaixo >= r.top ? `top:${r.bottom+4}px;` : `bottom:${window.innerHeight - r.top + 4}px;`);
+    panel.innerHTML = `<div style="padding:8px;border-bottom:1px solid var(--border);"><input class="input ct-busca" placeholder="Buscar unidade..." autocomplete="off" style="padding:7px 10px;font-size:13px;" /></div><div class="ct-opcoes" style="max-height:${alto-56}px;overflow-y:auto;"></div>`;
+    document.body.appendChild(panel);
+    const busca = panel.querySelector(".ct-busca");
+    desenhar("");
+    busca.addEventListener("input", ()=> desenhar(busca.value));
+    busca.addEventListener("keydown", (e)=>{
+      if(e.key==="ArrowDown"){ e.preventDefault(); marcar(ativo+1); }
+      else if(e.key==="ArrowUp"){ e.preventDefault(); marcar(ativo-1); }
+      else if(e.key==="Enter"){ e.preventDefault(); e.stopPropagation(); if(itens.length) escolher(itens[ativo]); }
+      else if(e.key==="Escape"){ e.preventDefault(); e.stopPropagation(); fechar(); inp.focus(); }
+    });
+    document.addEventListener("mousedown", foraClick, true);
+    document.addEventListener("scroll", fecharScroll, true);
+    window.addEventListener("resize", fechar);
+    busca.focus();
+  };
+  inp.addEventListener("click", abrir);
+  inp.addEventListener("keydown", (e)=>{ if(["Enter"," ","ArrowDown"].includes(e.key)){ e.preventDefault(); abrir(); } });
+  avisar();
+  const btn = body.querySelector("#"+id+"-nova");
+  if(btn) btn.addEventListener("click", (e)=>{
+    e.preventDefault();
+    openUnidadeModal(null, (salva)=>{ if(salva){ inp.value = salva.nome; avisar(); inp.dispatchEvent(new Event("change", { bubbles:true })); } }, { nested:true });
+  });
+  const mo = new MutationObserver(()=>{ if(!document.body.contains(inp)){ fechar(); mo.disconnect(); } });
+  mo.observe(document.body, { childList:true, subtree:true });
 }
 const MARCA_IMPORTADO = /^Importado de planilha/i;
 const foiImportado = (l) => MARCA_IMPORTADO.test(String((l&&l.observacao)||"").trim());
@@ -1321,7 +1438,7 @@ const PERMISSOES_GRUPOS = [
       {id:"cad-fornecedores", label:"Fornecedores"},
       {id:"cad-clientes", label:"Clientes"},
       {id:"cad-categorias-fin", label:"Categoria Financeira"},
-      {id:"cad-tipos-conta", label:"Tipo de Contas"},
+      {id:"cad-tipos-conta", label:"Tipo de conta a receber e a pagar"},
       {id:"cad-unidades", label:"Unidades"},
     ]},
   ]},
@@ -1508,7 +1625,8 @@ function renderFinCadastros(container){
     {id:"cad-fornecedores", label:"Fornecedores", acesso:"cad-fornecedores", render:renderCadFornecedores},
     {id:"cad-clientes", label:"Clientes", acesso:"cad-clientes", render:renderCadClientes},
     {id:"cad-categorias-fin", label:"Categoria Financeira", acesso:"cad-categorias-fin", render:renderCadCategoriasFinanceiras},
-    {id:"cad-tipos-conta", label:"Tipo de Contas", acesso:"cad-tipos-conta", render:renderCadTiposConta},
+    {id:"cad-tipos-receber", label:"Tipo de conta a receber", acesso:"cad-tipos-conta", render:(c)=>renderCadTiposConta(c,"receber")},
+    {id:"cad-tipos-pagar", label:"Tipo de conta a pagar", acesso:"cad-tipos-conta", render:(c)=>renderCadTiposConta(c,"pagar")},
     {id:"cad-unidades", label:"Unidades", acesso:"cad-unidades", render:renderCadUnidades},
   ]);
 }
@@ -1594,8 +1712,7 @@ function lancamentoFormHTML(tipo, item){
       </div>
       ${contraparteCampoHTML("f-contraparte", tipo, item?item.contraparte:"")}
       <label class="field"><span class="field-label">Unidade / Local</span>
-        <input class="input" id="f-unidade" list="unidades-list" value="${esc(item?item.unidade:"")}" placeholder="ex: Unidade Centro" required />
-        <datalist id="unidades-list">${unidadesConhecidas(STATE.lancamentos).map(u=>`<option value="${esc(u)}">`).join("")}</datalist>
+        ${unidadeSelectHTML("f-unidade", item?item.unidade:"")}
       </label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">Status</span>
@@ -1628,6 +1745,7 @@ function openLancamentoModal(tipo, item, onSaved){
       });
       body.querySelector("#f-cancel").addEventListener("click", closeModal);
       wireTipoContaCampo(body, "f-categoria", { lado:tipo });
+      wireUnidadeSelect(body, "f-unidade");
       wireContraparteCampo(body, "f-contraparte", tipo, item ? item.contraparte : "");
       wireTipoContaDoCadastro(body, "f-contraparte", "f-categoria", ()=> tipo==="entrada" ? STATE.clientes : STATE.fornecedores, { lado:tipo });
       body.querySelector("#lanc-form").addEventListener("submit", async (e)=>{
@@ -1635,6 +1753,7 @@ function openLancamentoModal(tipo, item, onSaved){
         const valor = parseFloat(body.querySelector("#f-valor").value);
         if(!exigirContraparte(body, "f-contraparte", tipo)) return;
         const contraparte = valorContraparte(body, "f-contraparte", tipo);
+        if(!exigirUnidade(body, "f-unidade")) return;
         const unidade = body.querySelector("#f-unidade").value.trim();
         if(!valor || valor<=0 || !contraparte || !unidade) return;
         const status = body.querySelector("#f-status").value;
@@ -1683,7 +1802,7 @@ function lancamentoDetalheHTML(l){
         ${badge(l.status)}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria)))}
+        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria, ladoDoRegistro(l))))}
         ${campoDetalheFat("Unidade", esc(l.unidade||"—"))}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
@@ -1791,7 +1910,7 @@ function renderLancamentosView(container, tipo){
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data_realizada||l.data_prevista)}</td>
                 <td>${badge(l.status)}</td>
-                <td>${tipoCellHTML(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria, ladoDoRegistro(l))}</td>
                 <td style="font-weight:500;color:#44403c;">${importadoIconHTML(l)}${esc(l.contraparte)}</td>
                 <td style="color:#78716c;">${esc(l.unidade||"—")}</td>
                 <td style="text-align:right;font-weight:600;color:${isEntrada?BRAND[600]:DANGER};">${currency(l.valor)}</td>
@@ -2023,7 +2142,7 @@ function renderPersonalizado(container){
           <table><thead><tr><th>Data</th><th>Tipo</th><th>Tipo de Conta</th><th>Cliente / Fornecedor</th><th>Unidade</th><th style="text-align:right;">Valor</th></tr></thead>
           <tbody>${filtrados.sort((a,b)=>(b.data_realizada||b.data_prevista).localeCompare(a.data_realizada||a.data_prevista)).map(l=>`
             <tr><td>${fmtDate(l.data_realizada||l.data_prevista)}</td><td>${l.tipo==="entrada"?"Entrada":"Saída"}</td>
-            <td>${tipoCellHTML(l.categoria)}</td><td style="font-weight:500;">${esc(l.contraparte)}</td><td style="color:#78716c;">${esc(l.unidade||"—")}</td>
+            <td>${tipoCellHTML(l.categoria, ladoDoRegistro(l))}</td><td style="font-weight:500;">${esc(l.contraparte)}</td><td style="color:#78716c;">${esc(l.unidade||"—")}</td>
             <td style="text-align:right;font-weight:600;color:${l.tipo==="entrada"?BRAND[600]:DANGER};">${currency(l.valor)}</td></tr>`).join("")}</tbody></table>
         </div>`}
       </div>`;
@@ -2061,7 +2180,7 @@ function cartaoCompraFormHTML(){
         <input class="input" id="cf-descricao" list="cf-descricao-list" placeholder="ex: Supermercado Extra" required />
         ${contrapartesDatalistHTML("cf-descricao-list", STATE.fornecedores)}</label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${tipoContaCampoHTML("cf-categoria", "")}
+        ${tipoContaCampoHTML("cf-categoria", "", { lado:"pagar" })}
         <label class="field"><span class="field-label">Valor total (R$)</span>
           <input class="input" type="number" min="0" step="0.01" id="cf-valor" placeholder="0,00" required /></label>
       </div>
@@ -2109,8 +2228,8 @@ function openCartaoCompraModal(onSaved){
         dataLabel.textContent = sim ? "Data da 1ª parcela" : "Data da compra";
       });
       body.querySelector("#cf-cancel").addEventListener("click", closeModal);
-      wireTipoContaCampo(body, "cf-categoria");
-      wireTipoContaDoCadastro(body, "cf-descricao", "cf-categoria", ()=> STATE.fornecedores);
+      wireTipoContaCampo(body, "cf-categoria", { lado:"pagar" });
+      wireTipoContaDoCadastro(body, "cf-descricao", "cf-categoria", ()=> STATE.fornecedores, { lado:"pagar" });
       const cadastrarCartaoBtnCf = body.querySelector("#btn-cadastrar-cartao-inline");
       if(cadastrarCartaoBtnCf) cadastrarCartaoBtnCf.addEventListener("click", (e)=>{
         e.preventDefault();
@@ -2160,7 +2279,7 @@ function cartaoEditFormHTML(item){
       ${item.parcelas_total>1 ? `<p class="field-hint" style="margin-top:-4px;">Parcela ${item.parcela_num} de ${item.parcelas_total} — o número de parcelas não pode ser alterado aqui.</p>` : ""}
       <label class="field"><span class="field-label">Descrição</span><input class="input" id="ce-descricao" value="${esc(item.descricao)}" required /></label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${tipoContaCampoHTML("ce-categoria", item.categoria)}
+        ${tipoContaCampoHTML("ce-categoria", item.categoria, { lado:"pagar" })}
         <label class="field"><span class="field-label">Valor desta parcela (R$)</span>
           <input class="input" type="number" min="0" step="0.01" id="ce-valor" value="${item.valor}" required /></label>
       </div>
@@ -2194,7 +2313,7 @@ function openCartaoEditModal(item, onSaved){
     bodyHTML: cartaoEditFormHTML(item),
     mount:(body)=>{
       body.querySelector("#ce-cancel").addEventListener("click", closeModal);
-      wireTipoContaCampo(body, "ce-categoria");
+      wireTipoContaCampo(body, "ce-categoria", { lado:"pagar" });
       const cadastrarCartaoBtnCe = body.querySelector("#btn-cadastrar-cartao-inline");
       if(cadastrarCartaoBtnCe) cadastrarCartaoBtnCe.addEventListener("click", (e)=>{
         e.preventDefault();
@@ -2250,7 +2369,7 @@ function cartaoLancamentoDetalheHTML(l){
         ${cartaoBadge(l.status)}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria)))}
+        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria, ladoDoRegistro(l))))}
         ${campoDetalheFat("Cartão", esc(l.cartao||"—"))}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
@@ -2358,7 +2477,7 @@ function renderCartoesLancamentos(container){
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${cartaoBadge(l.status)}</td>
-                <td>${tipoCellHTML(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria, ladoDoRegistro(l))}</td>
                 <td style="font-weight:500;color:#44403c;">${esc(l.descricao)}</td>
                 <td style="color:#78716c;">${esc(l.cartao)}</td>
                 <td style="color:#78716c;">${esc(l.portador)}</td>
@@ -2507,8 +2626,7 @@ function valeFormHTML(item){
           <input class="input" id="v-origem" list="vale-origens-list" value="${esc(item?item.origem:"")}" placeholder="ex: Sodexo, Alelo, VR..." required />
           ${contrapartesDatalistHTML("vale-origens-list", STATE.clientes, origens)}</label>
         <label class="field"><span class="field-label">Unidade</span>
-          <input class="input" id="v-unidade" list="vale-unidades-list" value="${esc(item?item.unidade:"")}" placeholder="ex: Unidade Centro" required />
-          <datalist id="vale-unidades-list">${unidades.map(u=>`<option value="${esc(u)}">`).join("")}</datalist></label>
+          ${unidadeSelectHTML("v-unidade", item?item.unidade:"")}</label>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">Status</span>
@@ -2536,12 +2654,14 @@ function openValeModal(item, onSaved){
     mount:(body)=>{
       body.querySelector("#v-cancel").addEventListener("click", closeModal);
       wireTipoContaCampo(body, "v-categoria", { lado:"entrada" });
+      wireUnidadeSelect(body, "v-unidade");
       wireTipoContaDoCadastro(body, "v-origem", "v-categoria", ()=> STATE.clientes, { lado:"entrada" });
       body.querySelector("#vale-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const valor = parseFloat(body.querySelector("#v-valor").value);
         const descricao = body.querySelector("#v-descricao").value.trim();
         const origem = body.querySelector("#v-origem").value.trim();
+        if(!exigirUnidade(body, "v-unidade")) return;
         const unidade = body.querySelector("#v-unidade").value.trim();
         if(!valor || valor<=0 || !descricao || !origem || !unidade) return;
         const payload = {
@@ -2582,7 +2702,7 @@ function valeDetalheHTML(l){
         ${valeBadge(l.status)}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria)))}
+        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria, ladoDoRegistro(l))))}
         ${campoDetalheFat("Origem / Emissor", esc(l.origem||"—"))}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
@@ -2688,7 +2808,7 @@ function renderValesLancamentos(container){
                 ${l.status==="previsto" ? tdCheck(l.id, selecionados) : "<td></td>"}
                 <td style="white-space:nowrap;">${fmtDate(l.data)}</td>
                 <td>${valeBadge(l.status)}</td>
-                <td>${tipoCellHTML(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria, ladoDoRegistro(l))}</td>
                 <td style="font-weight:500;color:#44403c;">${esc(l.descricao)}</td>
                 <td style="color:#78716c;">${esc(l.origem)}</td>
                 <td style="color:#78716c;">${esc(l.unidade||"—")}</td>
@@ -2825,8 +2945,7 @@ function fatLancamentoFormHTML(tipo, item){
       </div>
       ${contraparteCampoHTML("ff-contraparte", tipo, item?item.contraparte:"")}
       <label class="field"><span class="field-label">Unidade / Local</span>
-        <input class="input" id="ff-unidade" list="fat-unidades-list" value="${esc(item?item.unidade:"")}" placeholder="ex: Unidade Centro" required />
-        <datalist id="fat-unidades-list">${unidadesConhecidas(STATE.faturamentoLancamentos).map(u=>`<option value="${esc(u)}">`).join("")}</datalist>
+        ${unidadeSelectHTML("ff-unidade", item?item.unidade:"")}
       </label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">Status</span>
@@ -2878,6 +2997,7 @@ function openFatLancamentoModal(tipo, item, onSaved){
         body.querySelector("#ff-numero-wrap").style.display = dupCheck.checked ? "block" : "none";
       });
       wireTipoContaCampo(body, "ff-categoria", { lado:tipo });
+      wireUnidadeSelect(body, "ff-unidade");
       wireContraparteCampo(body, "ff-contraparte", tipo, item ? item.contraparte : "");
       wireTipoContaDoCadastro(body, "ff-contraparte", "ff-categoria", ()=> tipo==="entrada" ? STATE.clientes : STATE.fornecedores, { lado:tipo });
       body.querySelector("#fat-lanc-form").addEventListener("submit", async (e)=>{
@@ -2885,6 +3005,7 @@ function openFatLancamentoModal(tipo, item, onSaved){
         const valor = parseFloat(body.querySelector("#ff-valor").value);
         if(!exigirContraparte(body, "ff-contraparte", tipo)) return;
         const contraparte = valorContraparte(body, "ff-contraparte", tipo);
+        if(!exigirUnidade(body, "ff-unidade")) return;
         const unidade = body.querySelector("#ff-unidade").value.trim();
         if(!valor || valor<=0 || !contraparte || !unidade) return;
         const status = body.querySelector("#ff-status").value;
@@ -3019,7 +3140,7 @@ function renderFatLancamentosView(container, tipo){
                 <td style="font-weight:500;color:#44403c;">${importadoIconHTML(l)}${esc(l.contraparte)}</td>
                 <td>${badge(l.status)}</td>
                 <td style="text-align:right;font-weight:600;color:${isEntrada?BRAND[600]:DANGER};">${currency(l.valor)}</td>
-                <td>${tipoCellHTML(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria, ladoDoRegistro(l))}</td>
                 ${!isEntrada ? `<td style="color:#78716c;">${esc(l.unidade||"—")}</td><td style="color:#78716c;font-size:12px;">${l.duplicata ? esc(l.numero_duplicata||"Sim") : "—"}</td>` : `<td>${prazoBadge(l)}</td>`}
                 <td style="color:#a8a29e;font-size:12px;">${esc(l.observacao||"—")}</td>
                 <td>
@@ -3420,7 +3541,7 @@ function fatLancamentoDetalheHTML(l){
         ${badge(l.status)}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria)))}
+        ${campoDetalheFat("Tipo de Conta", esc(tipoDetalheTexto(l.categoria, ladoDoRegistro(l))))}
         ${campoDetalheFat("Unidade", esc(l.unidade||"—"))}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
@@ -3547,7 +3668,7 @@ function renderFatDuplicatas(container){
                 <td>${badge(l.status)}</td>
                 <td style="color:#78716c;">${esc(l.numero_duplicata||"—")}</td>
                 <td style="font-weight:500;color:#44403c;">${importadoIconHTML(l)}${esc(l.contraparte)}</td>
-                <td>${tipoCellHTML(l.categoria)}</td>
+                <td>${tipoCellHTML(l.categoria, ladoDoRegistro(l))}</td>
                 <td style="color:#78716c;">${esc(l.unidade||"—")}</td>
                 <td style="text-align:right;font-weight:600;color:${DANGER};">${currency(l.valor)}</td>
                 <td style="text-align:right;">${l.status==="previsto" ? `<button class="quitar-dup-btn" data-id="${l.id}" style="border:none;background:none;font-size:11px;color:${BRAND[600]};text-decoration:underline;cursor:pointer;">Marcar como pago</button>` : ""}</td>
@@ -3701,7 +3822,7 @@ function renderFatPersonalizado(container){
           <table><thead><tr><th>Data</th><th>Tipo</th><th>Tipo de Conta</th><th>Cliente / Fornecedor</th><th>Unidade</th><th style="text-align:right;">Valor</th></tr></thead>
           <tbody>${filtrados.sort((a,b)=>(b.data_realizada||b.data_prevista).localeCompare(a.data_realizada||a.data_prevista)).map(l=>`
             <tr><td>${fmtDate(l.data_realizada||l.data_prevista)}</td><td>${l.tipo==="entrada"?"Entrada":"Saída"}</td>
-            <td>${tipoCellHTML(l.categoria)}</td><td style="font-weight:500;">${esc(l.contraparte)}</td><td style="color:#78716c;">${esc(l.unidade||"—")}</td>
+            <td>${tipoCellHTML(l.categoria, ladoDoRegistro(l))}</td><td style="font-weight:500;">${esc(l.contraparte)}</td><td style="color:#78716c;">${esc(l.unidade||"—")}</td>
             <td style="text-align:right;font-weight:600;color:${l.tipo==="entrada"?BRAND[600]:DANGER};">${currency(l.valor)}</td></tr>`).join("")}</tbody></table>
         </div>`}
       </div>`;
@@ -3891,13 +4012,13 @@ function fornecedorFormHTML(item){
             <button type="button" class="btn btn-outline" id="ff-consultar-cnpj" title="Buscar dados pelo CNPJ" style="padding:0 12px;white-space:nowrap;">${icon("search",14)} Consultar</button>
           </div>
         </label>
-        ${tipoContaCampoHTML("ff-categoria", item?item.tipo_conta:"", { required:false })}
+        ${tipoContaCampoHTML("ff-categoria", item?item.tipo_conta:"", { required:false, lado:"pagar" })}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         <label class="field"><span class="field-label">Inscrição Estadual</span>
           <input class="input" id="ff-ie" placeholder="ex: 123.456.789.110 ou ISENTO" value="${esc(item?item.inscricao_estadual||"":"")}" /></label>
         <label class="field"><span class="field-label">Unidade padrão</span>
-          <input class="input" id="ff-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
+          ${unidadeSelectHTML("ff-unidade", item?item.unidade_padrao:"", { opcional:true })}</label>
       </div>
       <label class="field"><span class="field-label">Observações</span>
         <textarea class="input" id="ff-obs" rows="3">${esc(item?item.observacoes||"":"")}</textarea></label>
@@ -3917,7 +4038,9 @@ function openFornecedorModal(item, onSaved, { nested=false }={}){
     bodyHTML: fornecedorFormHTML(item),
     mount:(body)=>{
       body.querySelector("#ff-cancel").addEventListener("click", close);
-      wireTipoContaCampo(body, "ff-categoria");
+      wireTipoContaCampo(body, "ff-categoria", { lado:"pagar" });
+      wireUnidadeSelect(body, "ff-unidade", { opcional:true });
+      if(nested){ const nb = body.querySelector("#ff-unidade-nova"); if(nb) nb.remove(); }   // já estamos dentro de outra janela: não abre uma terceira
       wireConsultaCNPJ(body, { btn:"#ff-consultar-cnpj", documento:"#ff-documento", nome:"#ff-nome", nomeFantasia:"#ff-nome-fantasia", telefone:"#ff-telefone", observacoes:"#ff-obs" });
       body.querySelector("#fornecedor-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
@@ -3961,7 +4084,7 @@ function fornecedorDetalheHTML(f){
         ${campo("Inscrição Estadual", f.inscricao_estadual)}
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${campo("Tipo de Conta", f.tipo_conta ? tipoDetalheTexto(f.tipo_conta) : "")}
+        ${campo("Tipo de Conta", f.tipo_conta ? tipoDetalheTexto(f.tipo_conta, "pagar") : "")}
         ${campo("Unidade padrão", f.unidade_padrao)}
       </div>
       ${campo("Observações", f.observacoes)}
@@ -4017,7 +4140,7 @@ function renderCadFornecedores(container){
                 <td style="color:#78716c;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(f.observacoes||"")}">${esc(f.observacoes||"—")}</td>
                 <td style="color:#78716c;">${esc(f.documento||"—")}</td>
                 <td style="color:#78716c;white-space:nowrap;">${esc(f.inscricao_estadual||"—")}</td>
-                <td>${f.tipo_conta ? tipoCellHTML(f.tipo_conta) : `<span style="color:#a8a29e;">—</span>`}</td>
+                <td>${f.tipo_conta ? tipoCellHTML(f.tipo_conta, "pagar") : `<span style="color:#a8a29e;">—</span>`}</td>
                 <td style="color:#78716c;">${esc(f.unidade_padrao||"—")}</td>
                 <td style="color:#a8a29e;font-size:12px;">${esc(f.usuario_nome||"—")}</td>
                 <td>
@@ -4075,10 +4198,10 @@ function clienteFormHTML(item){
             <button type="button" class="btn btn-outline" id="fc-consultar-cnpj" title="Buscar dados pelo CNPJ" style="padding:0 12px;white-space:nowrap;">${icon("search",14)} Consultar</button>
           </div>
         </label>
-        ${tipoContaCampoHTML("fc-categoria", item?item.tipo_conta:"", { required:false })}
+        ${tipoContaCampoHTML("fc-categoria", item?item.tipo_conta:"", { required:false, lado:"receber" })}
       </div>
       <label class="field"><span class="field-label">Unidade padrão</span>
-        <input class="input" id="fc-unidade" placeholder="ex: Ferracini" value="${esc(item?item.unidade_padrao||"":"")}" /></label>
+        ${unidadeSelectHTML("fc-unidade", item?item.unidade_padrao:"", { opcional:true })}</label>
       <label class="field"><span class="field-label">Observações</span>
         <textarea class="input" id="fc-obs" rows="3">${esc(item?item.observacoes||"":"")}</textarea></label>
       <p class="field-hint" style="margin-top:-8px;">"Consultar" busca os dados do CNPJ na Receita Federal e preenche nome, telefone e observações (endereço) automaticamente.</p>
@@ -4097,7 +4220,9 @@ function openClienteModal(item, onSaved, { nested=false }={}){
     bodyHTML: clienteFormHTML(item),
     mount:(body)=>{
       body.querySelector("#fc-cancel").addEventListener("click", close);
-      wireTipoContaCampo(body, "fc-categoria");
+      wireTipoContaCampo(body, "fc-categoria", { lado:"receber" });
+      wireUnidadeSelect(body, "fc-unidade", { opcional:true });
+      if(nested){ const nb = body.querySelector("#fc-unidade-nova"); if(nb) nb.remove(); }   // já estamos dentro de outra janela: não abre uma terceira
       wireConsultaCNPJ(body, { btn:"#fc-consultar-cnpj", documento:"#fc-documento", nome:"#fc-nome", nomeFantasia:"#fc-nome-fantasia", telefone:"#fc-telefone", observacoes:"#fc-obs" });
       body.querySelector("#cliente-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
@@ -4137,7 +4262,7 @@ function clienteDetalheHTML(cl){
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
         ${campo("CNPJ/CPF", cl.documento)}
-        ${campo("Tipo de Conta", cl.tipo_conta ? tipoDetalheTexto(cl.tipo_conta) : "")}
+        ${campo("Tipo de Conta", cl.tipo_conta ? tipoDetalheTexto(cl.tipo_conta, "receber") : "")}
       </div>
       ${campo("Unidade padrão", cl.unidade_padrao)}
       ${campo("Observações", cl.observacoes)}
@@ -4192,7 +4317,7 @@ function renderCadClientes(container){
                 <td style="color:#78716c;">${esc(cl.telefone||"—")}</td>
                 <td style="color:#78716c;max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="${esc(cl.observacoes||"")}">${esc(cl.observacoes||"—")}</td>
                 <td style="color:#78716c;">${esc(cl.documento||"—")}</td>
-                <td>${cl.tipo_conta ? tipoCellHTML(cl.tipo_conta) : `<span style="color:#a8a29e;">—</span>`}</td>
+                <td>${cl.tipo_conta ? tipoCellHTML(cl.tipo_conta, "receber") : `<span style="color:#a8a29e;">—</span>`}</td>
                 <td style="color:#78716c;">${esc(cl.unidade_padrao||"—")}</td>
                 <td style="color:#a8a29e;font-size:12px;">${esc(cl.usuario_nome||"—")}</td>
                 <td>
@@ -4339,11 +4464,12 @@ function renderCadCategoriasFinanceiras(container){
 }
 
 /* ============================== Cadastro de Tipo de Contas ============================== */
-function tipoContaFormHTML(item){
+function tipoContaFormHTML(item, lado){
   const status = item?.status || "ativo";
   const categorias = STATE.categoriasFinanceiras;
   return `
     <form id="tipoconta-form">
+      <p class="field-hint" style="margin:-4px 0 12px;">Tipo de conta <b style="color:${normLado(lado)==="receber"?BRAND[700]:DANGER};">${rotuloLado(lado)}</b> — aparece só nas telas de ${normLado(lado)==="receber"?"Contas a receber, Vales, Carteira (entradas) e cadastro de Clientes":"Contas a pagar, Cartões, Carteira (saídas) e cadastro de Fornecedores"}.</p>
       <label class="field"><span class="field-label">Nome</span>
         <input class="input" id="tc-nome" value="${esc(item?item.nome:"")}" placeholder="ex: Conta Corrente" required /></label>
       <label class="field"><span class="field-label">Categoria Financeira</span>
@@ -4365,17 +4491,17 @@ function tipoContaFormHTML(item){
 }
 /* ---- Uso de cada Tipo de Conta (lançamentos + cadastros) ---- */
 function usoPorTipo(){
-  const mapa = new Map();
-  const bump = (nome, campo)=>{ const k = normKey(nome); if(!k) return; const o = mapa.get(k) || { lanc:0, cad:0 }; o[campo]++; mapa.set(k,o); };
-  STATE.lancamentos.forEach(l=>bump(l.categoria,"lanc"));
-  STATE.cartaoLancamentos.forEach(l=>bump(l.categoria,"lanc"));
-  STATE.valeLancamentos.forEach(l=>bump(l.categoria,"lanc"));
-  STATE.faturamentoLancamentos.forEach(l=>bump(l.categoria,"lanc"));
-  STATE.clientes.forEach(c=>bump(c.tipo_conta,"cad"));
-  STATE.fornecedores.forEach(f=>bump(f.tipo_conta,"cad"));
+  const mapa = new Map();   // chave: "lado|nome"
+  const bump = (nome, lado, campo)=>{ const k = normKey(nome); if(!k) return; const kk = lado+"|"+k; const o = mapa.get(kk) || { lanc:0, cad:0 }; o[campo]++; mapa.set(kk,o); };
+  STATE.lancamentos.forEach(l=>bump(l.categoria, ladoDoRegistro(l)||"pagar","lanc"));
+  STATE.cartaoLancamentos.forEach(l=>bump(l.categoria,"pagar","lanc"));
+  STATE.valeLancamentos.forEach(l=>bump(l.categoria,"receber","lanc"));
+  STATE.faturamentoLancamentos.forEach(l=>bump(l.categoria, ladoDoRegistro(l)||"pagar","lanc"));
+  STATE.clientes.forEach(c=>bump(c.tipo_conta,"receber","cad"));
+  STATE.fornecedores.forEach(f=>bump(f.tipo_conta,"pagar","cad"));
   return mapa;
 }
-const usoDoTipoConta = (nome) => usoPorTipo().get(normKey(nome)) || { lanc:0, cad:0 };
+const usoDoTipoConta = (nome, lado) => usoPorTipo().get(normLado(lado)+"|"+normKey(nome)) || { lanc:0, cad:0 };
 
 async function patchEmLotes(tabela, ids, body){
   for(let i=0;i<ids.length;i+=100){
@@ -4385,15 +4511,18 @@ async function patchEmLotes(tabela, ids, body){
 }
 /* Passa TUDO que usa o tipo de conta "antigo" (lançamentos de todas as telas e cadastros de
    clientes/fornecedores) para o tipo de conta "novo". Usado ao renomear e ao excluir. */
-async function moverTipoConta(antigo, novo){
-  const k = normKey(antigo);
+async function moverTipoConta(antigo, novo, lado){
+  const k = normKey(antigo), L = normLado(lado);
+  // só mexe nos registros do mesmo lado do tipo de conta (a receber / a pagar)
   const alvos = [
-    ["lancamentos","lancamentos","categoria"], ["cartao_lancamentos","cartaoLancamentos","categoria"],
-    ["vale_lancamentos","valeLancamentos","categoria"], ["faturamento_lancamentos","faturamentoLancamentos","categoria"],
-    ["clientes","clientes","tipo_conta"], ["fornecedores","fornecedores","tipo_conta"],
+    ["lancamentos","lancamentos","categoria", r=> (ladoDoRegistro(r)||"pagar")===L],
+    ["cartao_lancamentos","cartaoLancamentos","categoria", ()=> L==="pagar"],
+    ["vale_lancamentos","valeLancamentos","categoria", ()=> L==="receber"],
+    ["faturamento_lancamentos","faturamentoLancamentos","categoria", r=> (ladoDoRegistro(r)||"pagar")===L],
+    ["clientes","clientes","tipo_conta", ()=> L==="receber"], ["fornecedores","fornecedores","tipo_conta", ()=> L==="pagar"],
   ];
-  for(const [tabela, chave, campo] of alvos){
-    const ids = STATE[chave].filter(r=> normKey(r[campo])===k && r[campo]!==novo).map(r=>r.id);
+  for(const [tabela, chave, campo, doLado] of alvos){
+    const ids = STATE[chave].filter(r=> (!L || doLado(r)) && normKey(r[campo])===k && r[campo]!==novo).map(r=>r.id);
     if(!ids.length) continue;
     await patchEmLotes(tabela, ids, { [campo]: novo });
     const set = new Set(ids);
@@ -4415,9 +4544,10 @@ const textoUso = (uso) => {
 };
 
 function abrirExclusaoTipoConta(item, onDone){
-  const uso = usoDoTipoConta(item.nome);
+  const lado = ladoDoTipo(item);
+  const uso = usoDoTipoConta(item.nome, lado);
   if(!uso.lanc && !uso.cad){
-    openConfirm(`Excluir o tipo de conta "${item.nome}"? Essa ação não pode ser desfeita.`, async ()=>{
+    openConfirm(`Excluir o tipo de conta ${rotuloLado(lado)} "${item.nome}"? Essa ação não pode ser desfeita.`, async ()=>{
       try{ await deleteTipoConta(item.id); onDone && onDone(); }catch(err){ toast(err.message, true); }
     });
     return;
@@ -4428,8 +4558,8 @@ function abrirExclusaoTipoConta(item, onDone){
       <form id="tcdel-form">
         <p style="margin:0 0 12px;font-size:14px;color:#44403c;line-height:1.5;">O tipo de conta <b>${esc(item.nome)}</b> está sendo usado em ${textoUso(uso)}. Para excluir, escolha para qual tipo de conta eles serão passados:</p>
         <label class="field"><span class="field-label">Passar tudo para</span>
-          <select class="input" id="tcdel-destino" required>${tipoContaOptionsHTML("", { excluir:item.nome })}</select>
-          <span class="field-hint" id="tcdel-destino-catfin" style="margin-top:5px;">${catfinHintTexto("")}</span>
+          <select class="input" id="tcdel-destino" required>${tipoContaOptionsHTML("", { excluir:item.nome, lado })}</select>
+          <span class="field-hint" id="tcdel-destino-catfin" style="margin-top:5px;">${catfinHintTexto("", lado)}</span>
         </label>
         <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;">
           <button type="button" class="btn btn-outline" id="tcdel-cancel">Cancelar</button>
@@ -4438,7 +4568,7 @@ function abrirExclusaoTipoConta(item, onDone){
       </form>`,
     mount:(body)=>{
       const sel = body.querySelector("#tcdel-destino");
-      sel.addEventListener("change", ()=>{ body.querySelector("#tcdel-destino-catfin").innerHTML = catfinHintTexto(sel.value); });
+      sel.addEventListener("change", ()=>{ body.querySelector("#tcdel-destino-catfin").innerHTML = catfinHintTexto(sel.value, lado); });
       body.querySelector("#tcdel-cancel").addEventListener("click", closeModal);
       body.querySelector("#tcdel-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
@@ -4447,7 +4577,7 @@ function abrirExclusaoTipoConta(item, onDone){
         const btn = body.querySelector("#tcdel-submit");
         btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Passando...`;
         try{
-          await moverTipoConta(item.nome, destino);
+          await moverTipoConta(item.nome, destino, lado);
           await deleteTipoConta(item.id);
           closeModal(); toast(`Tudo foi passado para "${destino}" e o tipo "${item.nome}" foi excluído.`);
           onDone && onDone();
@@ -4507,11 +4637,14 @@ function abrirExclusaoCategoriaFinanceira(item, onDone){
 
 /* ---- Importar categorias antigas (tabela "categorias" + nomes já usados nos lançamentos) como Tipos de Conta ---- */
 const ORIGEM_LABEL = { entrada:"Entradas", saida:"Saídas", cartao:"Cartões", vale:"Vales", fat_entrada:"Fat. Entradas", fat_saida:"Fat. Saídas" };
-function categoriasAntigasPendentes(){
+const LADO_DA_ORIGEM = { entrada:"receber", fat_entrada:"receber", vale:"receber", saida:"pagar", fat_saida:"pagar", cartao:"pagar" };
+function categoriasAntigasPendentes(lado){
   const mapa = new Map();
+  const L = normLado(lado);
   const add = (nome, origem)=>{
     const n = String(nome||"").trim(); if(!n) return;
-    if(tipoContaPorNome(n)) return;
+    if(L && LADO_DA_ORIGEM[origem]!==L) return;                 // só o que pertence a este lado
+    if(tipoContaPorNome(n, L, { estrito:true })) return;       // já existe neste lado
     const k = normKey(n);
     if(!mapa.has(k)) mapa.set(k, { nome:n, origens:new Set() });
     mapa.get(k).origens.add(origem);
@@ -4547,16 +4680,17 @@ function sugerirCategoriaFinanceira(nome, origens){
   }
   return existe(g);
 }
-function openImportarCategoriasAntigasModal(onDone){
-  const lista = categoriasAntigasPendentes();
+function openImportarCategoriasAntigasModal(onDone, lado){
+  const L = normLado(lado) || "pagar";
+  const lista = categoriasAntigasPendentes(L);
   const usos = usoPorTipo();
   const catOpts = (sel)=> `<option value="">Selecione...</option>` + STATE.categoriasFinanceiras.map(c=>`<option value="${esc(c.categoria)}" ${c.categoria===sel?"selected":""}>${esc(c.categoria)}${c.status==="inativo"?" (inativa)":""}</option>`).join("");
   openModal({
-    title: "Importar categorias antigas",
+    title: `Importar tipos de conta ${rotuloLado(L)} já usados`,
     wide: true,
     bodyHTML: `
       <form id="impcat-form">
-        <p class="field-hint" style="margin-top:-4px;">Estas são as categorias antigas (e nomes já usados em lançamentos) que ainda não existem como Tipo de Conta. Escolha a Categoria Financeira de cada uma — já deixei uma sugestão — e desmarque as que não quiser trazer. Depois você pode editar ou excluir qualquer tipo normalmente.</p>
+        <p class="field-hint" style="margin-top:-4px;">Estes são os nomes já usados em lançamentos ${L==="receber"?"de entrada (Contas a receber, Vales, Carteira)":"de saída (Contas a pagar, Cartões, Carteira)"} que ainda não existem como Tipo de Conta ${rotuloLado(L)}. Escolha a Categoria Financeira de cada uma — já deixei uma sugestão — e desmarque as que não quiser trazer. Depois você pode editar ou excluir qualquer tipo normalmente.</p>
         <label style="display:flex;align-items:center;gap:8px;font-size:13px;color:#57534e;margin:0 0 10px;cursor:pointer;">
           <input type="checkbox" id="impcat-upper" checked /> Escrever os nomes em MAIÚSCULAS (igual aos seus tipos de conta atuais)
         </label>
@@ -4572,7 +4706,7 @@ function openImportarCategoriasAntigasModal(onDone){
             </thead>
             <tbody>
               ${lista.map((c,i)=>{
-                const u = usos.get(normKey(c.nome));
+                const u = usos.get(L+"|"+normKey(c.nome));
                 return `<tr class="impcat-row" data-i="${i}">
                   <td style="padding:6px 8px;"><input type="checkbox" class="impcat-chk" checked /></td>
                   <td style="padding:6px 8px;font-weight:500;color:#44403c;">${esc(c.nome)}</td>
@@ -4600,12 +4734,12 @@ function openImportarCategoriasAntigasModal(onDone){
           const c = lista[parseInt(tr.dataset.i,10)];
           const cat = tr.querySelector(".impcat-sel").value;
           if(!cat){ toast(`Escolha a categoria financeira de "${c.nome}" (ou desmarque a linha).`, true); return; }
-          linhas.push({ nome: upper ? c.nome.toLocaleUpperCase("pt-BR") : c.nome, categoria_financeira: cat, status:"ativo", usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome });
+          linhas.push({ nome: upper ? c.nome.toLocaleUpperCase("pt-BR") : c.nome, categoria_financeira: cat, lado: L, status:"ativo", usuario_id: STATE.currentUser.id, usuario_nome: STATE.currentUser.nome });
         }
         if(!linhas.length){ toast("Nenhuma categoria marcada.", true); return; }
         // nomes que ficariam repetidos depois de passar para maiúsculas
         const vistos = new Set(); const unicas = [];
-        linhas.forEach(l=>{ const k = normKey(l.nome); if(!vistos.has(k) && !tipoContaPorNome(l.nome)){ vistos.add(k); unicas.push(l); } });
+        linhas.forEach(l=>{ const k = normKey(l.nome); if(!vistos.has(k) && !tipoContaPorNome(l.nome, L, { estrito:true })){ vistos.add(k); unicas.push(l); } });
         const btn = body.querySelector("#impcat-submit");
         btn.disabled = true; btn.innerHTML = `<span class="spinner"></span> Importando...`;
         try{
@@ -4621,22 +4755,24 @@ function openImportarCategoriasAntigasModal(onDone){
   });
 }
 
-function openTipoContaModal(item, onSaved, { nested=false }={}){
+function openTipoContaModal(item, onSaved, { nested=false, lado=null }={}){
   const open = nested ? openNestedModal : openModal;
   const close = nested ? closeNestedModal : closeModal;
+  const L = item ? ladoDoTipo(item) : (normLado(lado) || "pagar");
   open({
-    title: item ? "Editar tipo de conta" : "Novo tipo de conta",
-    bodyHTML: tipoContaFormHTML(item),
+    title: `${item ? "Editar" : "Novo"} tipo de conta ${rotuloLado(L)}`,
+    bodyHTML: tipoContaFormHTML(item, L),
     mount:(body)=>{
       body.querySelector("#tc-cancel").addEventListener("click", close);
       body.querySelector("#tipoconta-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
         const nome = body.querySelector("#tc-nome").value.trim();
         if(!nome) return;
-        const repetido = STATE.tiposConta.find(t=> normKey(t.nome)===normKey(nome) && (!item || t.id!==item.id));
-        if(repetido){ toast(`Já existe o tipo de conta "${repetido.nome}".`, true); return; }
+        const repetido = STATE.tiposConta.find(t=> ladoDoTipo(t)===L && normKey(t.nome)===normKey(nome) && (!item || t.id!==item.id));
+        if(repetido){ toast(`Já existe o tipo de conta ${rotuloLado(L)} "${repetido.nome}".`, true); return; }
         const payload = {
           nome,
+          lado: L,
           categoria_financeira: body.querySelector("#tc-categoria").value || null,
           status: body.querySelector("#tc-status").value,
         };
@@ -4646,33 +4782,35 @@ function openTipoContaModal(item, onSaved, { nested=false }={}){
           let salvo;
           if(item){
             salvo = await editTipoConta(item.id, payload);
-            if(item.nome !== nome) await moverTipoConta(item.nome, nome);   // o nome novo acompanha todos os lançamentos/cadastros
+            if(item.nome !== nome) await moverTipoConta(item.nome, nome, L);   // o nome novo acompanha os lançamentos/cadastros deste lado
           } else salvo = await addTipoConta(payload);
           close(); onSaved && onSaved(salvo);
-        }catch(err){ toast(err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar tipo de conta`; }
+        }catch(err){ toast(/\blado\b/.test(err.message) ? "Falta criar a coluna \"lado\" no Supabase — rode o arquivo sql_tipo_conta_receber_pagar.sql." : err.message, true); btn.disabled=false; btn.innerHTML = `${icon("check",15)} Salvar tipo de conta`; }
       });
     }
   });
 }
-function renderCadTiposConta(container){
+function renderCadTiposConta(container, lado){
+  const L = normLado(lado) || "pagar";
   const sortState = { key:"nome", dir:"asc" };
   let usos = new Map();
-  const usoTotal = (c)=>{ const u = usos.get(normKey(c.nome)) || { lanc:0, cad:0 }; return u.lanc + u.cad; };
+  const usoTotal = (c)=>{ const u = usos.get(L+"|"+normKey(c.nome)) || { lanc:0, cad:0 }; return u.lanc + u.cad; };
   const sortExtractors = { nome: c=>c.nome, categoria: c=>c.categoria_financeira, uso: c=>usoTotal(c), status: c=>c.status };
 
   function refresh(){
     usos = usoPorTipo();
-    const dados = ordenarPor(STATE.tiposConta, sortState, sortExtractors);
-    const pendentes = categoriasAntigasPendentes().length;
+    const doLado = STATE.tiposConta.filter(t=> ladoDoTipo(t)===L);
+    const dados = ordenarPor(doLado, sortState, sortExtractors);
+    const pendentes = categoriasAntigasPendentes(L).length;
     container.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
         <div>
-          <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Tipo de Contas</h2>
-          <p class="muted" style="margin:4px 0 0;font-size:13px;">${STATE.tiposConta.length} tipo(s) cadastrado(s) · o Tipo de Conta é o item (ex: ÁGUA); a Categoria Financeira é o grupo dele (ex: Operacional).</p>
+          <h2 class="serif" style="margin:0;font-size:24px;color:${BRAND[800]};">Tipo de conta ${rotuloLado(L)}</h2>
+          <p class="muted" style="margin:4px 0 0;font-size:13px;">${doLado.length} tipo(s) cadastrado(s) · usado em ${L==="receber"?"Contas a receber, Vales, Carteira (entradas) e Clientes":"Contas a pagar, Cartões, Carteira (saídas) e Fornecedores"}. O Tipo de Conta é o item (ex: ÁGUA); a Categoria Financeira é o grupo dele (ex: Operacional).</p>
         </div>
         <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          ${pendentes ? `<button class="btn btn-outline" id="btn-importar-antigas">${icon("download",15)} Importar categorias antigas (${pendentes})</button>` : ""}
-          <button class="btn btn-primary" id="btn-novo-tipoconta">${icon("plus",16)} Novo tipo de conta</button>
+          ${pendentes ? `<button class="btn btn-outline" id="btn-importar-antigas">${icon("download",15)} Importar tipos já usados (${pendentes})</button>` : ""}
+          <button class="btn btn-primary" id="btn-novo-tipoconta">${icon("plus",16)} Novo tipo de conta ${rotuloLado(L)}</button>
         </div>
       </div>
       <div class="card" style="overflow-x:auto;">
@@ -4680,7 +4818,7 @@ function renderCadTiposConta(container){
           <thead><tr>${thSort("Nome","nome",sortState)}${thSort("Categoria Financeira","categoria",sortState)}${thSort("Em uso","uso",sortState)}${thSort("Status","status",sortState)}<th style="text-align:right;">Ações</th></tr></thead>
           <tbody>
             ${dados.map(c=>{
-              const u = usos.get(normKey(c.nome)) || { lanc:0, cad:0 };
+              const u = usos.get(L+"|"+normKey(c.nome)) || { lanc:0, cad:0 };
               return `
               <tr>
                 <td style="font-weight:500;color:#44403c;">${esc(c.nome)}</td>
@@ -4693,16 +4831,16 @@ function renderCadTiposConta(container){
                     <button class="icon-btn danger del-tipoconta-btn" data-id="${c.id}">${icon("trash",15,DANGER)}</button>
                   </div>
                 </td>
-              </tr>`; }).join("") || `<tr><td colspan="5" class="empty">Nenhum tipo de conta cadastrado ainda.</td></tr>`}
+              </tr>`; }).join("") || `<tr><td colspan="5" class="empty">Nenhum tipo de conta ${rotuloLado(L)} cadastrado ainda.${pendentes ? ` Use "Importar tipos já usados" para trazer os nomes que já aparecem nos lançamentos.` : ""}</td></tr>`}
           </tbody>
         </table>
       </div>`;
 
     wireSort(container, sortState, refresh);
     wireTopScroll(container);
-    container.querySelector("#btn-novo-tipoconta").addEventListener("click", ()=> openTipoContaModal(null, refresh));
+    container.querySelector("#btn-novo-tipoconta").addEventListener("click", ()=> openTipoContaModal(null, refresh, { lado:L }));
     const imp = container.querySelector("#btn-importar-antigas");
-    if(imp) imp.addEventListener("click", ()=> openImportarCategoriasAntigasModal(refresh));
+    if(imp) imp.addEventListener("click", ()=> openImportarCategoriasAntigasModal(refresh, L));
     container.querySelectorAll(".edit-tipoconta-btn").forEach(b=> b.addEventListener("click", ()=>{
       openTipoContaModal(STATE.tiposConta.find(c=>c.id===b.dataset.id), refresh);
     }));
