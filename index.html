@@ -3382,12 +3382,12 @@ function importarTitulosFormHTML(tipo){
   return `
     <form id="import-form">
       <p class="field-hint" style="margin-top:-4px;">
-        Envie a planilha .xlsx de ${tipo==="entrada"?"Títulos a Receber":"Títulos a Pagar"} (mesmas colunas do relatório do FastSoft). A planilha não traz Tipo de Conta nem Unidade — cada título usa o Tipo de Conta do cadastro do ${tipo==="entrada"?"cliente":"fornecedor"} quando ele tiver um; senão, vale o Tipo de Conta padrão escolhido abaixo. A Unidade de importação (opcional) é aplicada a todas as linhas. Todos os títulos entram como "Em aberto"; você marca como pago(s)/recebido(s) depois.
+        Envie a planilha .xlsx de ${tipo==="entrada"?"Títulos a Receber":"Títulos a Pagar"} (mesmas colunas do relatório do FastSoft). Cada título só é importado se o ${tipo==="entrada"?"cliente":"fornecedor"} já estiver no cadastro — o Tipo de Conta vem automaticamente do cadastro dele. Títulos de ${tipo==="entrada"?"cliente":"fornecedor"} que não estiver cadastrado ficam bloqueados e aparecem com um aviso. A Unidade de importação (opcional) é aplicada a todas as linhas. Todos os títulos entram como "Em aberto".
       </p>
       <label class="field"><span class="field-label">Arquivo (.xlsx)</span>
         <input class="input" type="file" id="imp-arquivo" accept=".xlsx,.xls" required /></label>
       <div style="display:grid;grid-template-columns:1fr 1fr;gap:0 14px;">
-        ${tipoContaCampoHTML("imp-categoria", "", { lado:tipo, label:"Tipo de Conta padrão" })}
+        ${tipoContaCampoHTML("imp-categoria", "", { lado:tipo, label:"Tipo de Conta (só p/ cadastros sem tipo)", required:false })}
         <label class="field"><span class="field-label">Unidade de importação (opcional)</span>
           <select class="input" id="imp-unidade">
             <option value="">Sem unidade</option>
@@ -3404,53 +3404,90 @@ function importarTitulosFormHTML(tipo){
       </div>
     </form>`;
 }
-function linhaImportEditavelHTML(l, i){
-  return `<tr class="imp-row" data-key="${i}">
-    <td style="padding:6px;"><input class="input imp-venc" type="date" value="${esc(l.vencimentoISO)}" style="min-width:135px;padding:6px 8px;font-size:13px;" /></td>
-    <td style="padding:6px;"><input class="input imp-nome" type="text" value="${esc(l.nome)}" style="min-width:180px;padding:6px 8px;font-size:13px;" /></td>
-    <td style="padding:6px;"><input class="input imp-doc" type="text" value="${esc(l.documento||"")}" style="min-width:140px;padding:6px 8px;font-size:13px;" /></td>
-    <td style="padding:6px;text-align:right;"><input class="input imp-valor" type="number" step="0.01" min="0" value="${l.valor}" style="max-width:110px;padding:6px 8px;font-size:13px;text-align:right;" /></td>
+/* acha o cliente/fornecedor do cadastro: primeiro pelo CNPJ/CPF (se vier na planilha), depois pelo nome / nome fantasia */
+function acharCadastroImport(l, tipo){
+  const lista = tipo==="entrada" ? STATE.clientes : STATE.fornecedores;
+  const dig = String(l.documento||"").replace(/\D/g,"");
+  if(dig.length>=11){ const c = lista.find(x=> String(x.documento||"").replace(/\D/g,"")===dig); if(c) return c; }
+  return cadastroPorNome(l.nome, lista);
+}
+/* resultado: { cadastro, categoria } quando pode importar; { erro, motivo } quando está bloqueada */
+function avaliarLinhaImport(l, tipo, padrao){
+  const rot = tipo==="entrada" ? "Cliente" : "Fornecedor";
+  const c = acharCadastroImport(l, tipo);
+  if(!c) return { motivo:"cadastro", erro:`${rot} não cadastrado` };
+  const categoria = c.tipo_conta || padrao || "";
+  if(!categoria) return { cadastro:c, motivo:"tipo", erro:`${rot} cadastrado sem Tipo de Conta` };
+  return { cadastro:c, categoria, doCadastro: !!c.tipo_conta };
+}
+function statusImportHTML(av){
+  if(av.erro) return `<span style="color:${av.motivo==="tipo"?WARN:DANGER};font-weight:600;">✕ ${esc(av.erro)}</span>`;
+  return `<span style="color:${BRAND[700]};">✓ ${esc(av.categoria)}</span>${av.doCadastro?"":` <span style="color:#a8a29e;">(tipo padrão)</span>`}`;
+}
+function linhaImportEditavelHTML(l, i, tipo, padrao){
+  const av = avaliarLinhaImport(l, tipo, padrao);
+  return `<tr class="imp-row" data-key="${i}" style="${av.erro?`background:${DANGER_BG||"#fdf2f0"};`:""}">
+    <td style="padding:6px;"><input class="input imp-venc" type="date" value="${esc(l.vencimentoISO)}" style="padding:6px 6px;font-size:13px;" /></td>
+    <td style="padding:6px;"><input class="input imp-nome" type="text" value="${esc(l.nome)}" style="padding:6px 8px;font-size:13px;" />
+      <div class="imp-status" style="margin-top:3px;font-size:11px;">${statusImportHTML(av)}</div></td>
+    <td style="padding:6px;"><input class="input imp-doc" type="text" value="${esc(l.documento||"")}" style="padding:6px 8px;font-size:13px;" /></td>
+    <td style="padding:6px;text-align:right;"><input class="input imp-valor" type="number" step="0.01" min="0" value="${l.valor}" style="padding:6px 8px;font-size:13px;text-align:right;" /></td>
     <td style="padding:6px;text-align:center;"><button type="button" class="icon-btn danger imp-remove-row" title="Remover esta linha">${icon("trash",14,DANGER)}</button></td>
   </tr>`;
 }
-function previewImportEditavelHTML(tipo, linhas, erros){
+function previewImportEditavelHTML(tipo, linhas, erros, padrao){
   const totalValor = linhas.reduce((s,l)=>s+l.valor,0);
   const colunaNome = tipo==="entrada" ? "Cliente" : "Fornecedor";
   return `
     <div class="card" style="padding:12px 14px;background:${BRAND[50]};border-color:${BRAND[200]};margin-bottom:10px;">
-      <p style="margin:0;font-size:13px;color:${BRAND[800]};font-weight:600;" id="imp-resumo">${linhas.length} título(s) prontos para importar · Total: ${currency(totalValor)}</p>
+      <p style="margin:0;font-size:13px;color:${BRAND[800]};font-weight:600;" id="imp-resumo"></p>
       ${erros.length ? `<p style="margin:6px 0 0;font-size:12px;color:${DANGER};">${erros.length} linha(s) da planilha ignorada(s) por falta de vencimento ou nome.</p>` : ""}
     </div>
-    <p class="field-hint" style="margin-top:0;">Revise abaixo: edite qualquer campo ou remova uma linha antes de confirmar — só o que ficar na lista será importado.</p>
-    <div style="max-height:48vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px;">
-      <table style="width:100%;">
+    <p class="field-hint" style="margin-top:0;">Revise abaixo. Linhas em vermelho estão bloqueadas (${colunaNome.toLowerCase()} fora do cadastro) e <b>não serão importadas</b>; você pode corrigir o nome/CNPJ para bater com o cadastro ou remover a linha.</p>
+    <div style="max-height:48vh;overflow:auto;border:1px solid var(--border);border-radius:10px;">
+      <table style="width:100%;table-layout:fixed;">
+        <colgroup><col style="width:148px;"><col><col style="width:150px;"><col style="width:96px;"><col style="width:44px;"></colgroup>
         <thead style="position:sticky;top:0;background:#fff;">
           <tr>
             <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">Vencimento</th>
-            <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">${colunaNome}</th>
+            <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">${colunaNome} · Tipo de Conta</th>
             <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">CNPJ/CPF</th>
             <th style="text-align:right;padding:8px;font-size:12px;color:#78716c;">Valor</th>
             <th style="padding:8px;"></th>
           </tr>
         </thead>
-        <tbody id="imp-linhas-body">${linhas.map((l,i)=>linhaImportEditavelHTML(l,i)).join("")}</tbody>
+        <tbody id="imp-linhas-body">${linhas.map((l,i)=>linhaImportEditavelHTML(l,i,tipo,padrao)).join("")}</tbody>
       </table>
     </div>`;
 }
-function atualizarResumoImportacao(body, submitBtn){
-  const linhasNode = body.querySelectorAll(".imp-row");
-  const resumo = body.querySelector("#imp-resumo");
-  let total = 0;
-  linhasNode.forEach(tr=>{ total += parseFloat(tr.querySelector(".imp-valor").value)||0; });
-  if(resumo) resumo.textContent = `${linhasNode.length} título(s) prontos para importar · Total: ${currency(total)}`;
-  submitBtn.disabled = linhasNode.length===0;
-}
-function wireLinhasImportEditaveis(body, submitBtn){
-  body.querySelectorAll(".imp-remove-row").forEach(btn=> btn.addEventListener("click", ()=>{
-    btn.closest("tr").remove();
-    atualizarResumoImportacao(body, submitBtn);
+function lerLinhasImport(body){
+  return Array.from(body.querySelectorAll(".imp-row")).map(tr=>({
+    tr,
+    vencimentoISO: tr.querySelector(".imp-venc").value,
+    nome: tr.querySelector(".imp-nome").value.trim(),
+    documento: tr.querySelector(".imp-doc").value.trim(),
+    valor: parseFloat(tr.querySelector(".imp-valor").value) || 0,
   }));
-  body.querySelectorAll(".imp-valor").forEach(inp=> inp.addEventListener("input", ()=> atualizarResumoImportacao(body, submitBtn)));
+}
+/* reavalia todas as linhas (cadastro + tipo de conta), pinta as bloqueadas e atualiza o resumo/botão */
+function atualizarResumoImportacao(body, submitBtn, tipo){
+  const padrao = (body.querySelector("#imp-categoria")||{}).value || "";
+  const linhas = lerLinhasImport(body);
+  let prontos = 0, bloqueados = 0, total = 0;
+  linhas.forEach(l=>{
+    const av = avaliarLinhaImport(l, tipo, padrao);
+    l.tr.querySelector(".imp-status").innerHTML = statusImportHTML(av);
+    l.tr.style.background = av.erro ? "#fdf2f0" : "";
+    if(av.erro) bloqueados++; else { prontos++; total += l.valor; }
+  });
+  const resumo = body.querySelector("#imp-resumo");
+  if(resumo) resumo.innerHTML = `${prontos} título(s) prontos para importar · Total: ${currency(total)}` + (bloqueados ? ` <span style="color:${DANGER};">· ${bloqueados} bloqueado(s) por falta de cadastro/tipo de conta</span>` : "");
+  submitBtn.disabled = prontos===0;
+}
+function wireLinhasImportEditaveis(body, submitBtn, tipo){
+  const atualizar = ()=> atualizarResumoImportacao(body, submitBtn, tipo);
+  body.querySelectorAll(".imp-remove-row").forEach(btn=> btn.addEventListener("click", ()=>{ btn.closest("tr").remove(); atualizar(); }));
+  body.querySelectorAll(".imp-valor, .imp-nome, .imp-doc").forEach(inp=> inp.addEventListener("input", atualizar));
 }
 function openImportarTitulosModal(tipo, onImported){
   openModal({
@@ -3463,6 +3500,7 @@ function openImportarTitulosModal(tipo, onImported){
       const submitBtn = body.querySelector("#imp-submit");
       body.querySelector("#imp-cancel").addEventListener("click", closeModal);
       wireTipoContaCampo(body, "imp-categoria", { lado:tipo });
+      body.querySelector("#imp-categoria").addEventListener("change", ()=>{ if(body.querySelector(".imp-row")) atualizarResumoImportacao(body, submitBtn, tipo); });
       body.querySelector("#imp-unidade-nova").addEventListener("click", (e)=>{
         e.preventDefault();
         openUnidadeModal(null, (salva)=>{
@@ -3479,9 +3517,9 @@ function openImportarTitulosModal(tipo, onImported){
         try{
           const rows = await lerPlanilha(file);
           const { ok, erros } = extrairTitulosDaPlanilha(rows, tipo);
-          preview.innerHTML = previewImportEditavelHTML(tipo, ok, erros);
-          wireLinhasImportEditaveis(body, submitBtn);
-          submitBtn.disabled = ok.length===0;
+          preview.innerHTML = previewImportEditavelHTML(tipo, ok, erros, body.querySelector("#imp-categoria").value);
+          wireLinhasImportEditaveis(body, submitBtn, tipo);
+          atualizarResumoImportacao(body, submitBtn, tipo);
         }catch(err){
           preview.innerHTML = `<p class="field-hint" style="color:${DANGER};">Não foi possível ler essa planilha: ${esc(err.message)}</p>`;
           submitBtn.disabled = true;
@@ -3489,25 +3527,17 @@ function openImportarTitulosModal(tipo, onImported){
       });
       body.querySelector("#import-form").addEventListener("submit", async (e)=>{
         e.preventDefault();
-        const linhasAtuais = Array.from(body.querySelectorAll(".imp-row")).map(tr=>({
-          vencimentoISO: tr.querySelector(".imp-venc").value,
-          nome: tr.querySelector(".imp-nome").value.trim(),
-          documento: tr.querySelector(".imp-doc").value.trim(),
-          valor: parseFloat(tr.querySelector(".imp-valor").value) || 0,
-        })).filter(l=>l.vencimentoISO && l.nome);
-        if(linhasAtuais.length===0) return;
-        const categoria = body.querySelector("#imp-categoria").value;
-        const cadastros = tipo==="entrada" ? STATE.clientes : STATE.fornecedores;
+        const padrao = body.querySelector("#imp-categoria").value;
+        const rot = tipo==="entrada" ? "Cliente" : "Fornecedor";
+        const todas = lerLinhasImport(body).filter(l=>l.vencimentoISO && l.nome).map(l=>({ ...l, av: avaliarLinhaImport(l, tipo, padrao) }));
+        const aptas = todas.filter(l=>!l.av.erro);
+        const falhas = todas.filter(l=>l.av.erro);
+        if(aptas.length===0) return;
         const unidade = body.querySelector("#imp-unidade").value.trim();   // opcional
         submitBtn.disabled = true; submitBtn.innerHTML = `<span class="spinner"></span> Importando...`;
         try{
-          let novasContrapartes = 0;
-          for(const l of linhasAtuais){
-            const criado = tipo==="entrada" ? await garantirCliente(l.nome, l.documento) : await garantirFornecedor(l.nome, l.documento);
-            if(criado) novasContrapartes++;
-          }
-          const payload = linhasAtuais.map(l=>({
-            tipo, categoria: ((cadastroPorNome(l.nome, cadastros)||{}).tipo_conta) || categoria, contraparte: l.nome, unidade,
+          const payload = aptas.map(l=>({
+            tipo, categoria: l.av.categoria, contraparte: l.av.cadastro.nome, unidade,   // nome e Tipo de Conta vêm do cadastro
             status: "previsto",
             data_prevista: l.vencimentoISO,
             data_realizada: null,
@@ -3516,9 +3546,42 @@ function openImportarTitulosModal(tipo, onImported){
             ...(tipo==="saida" ? { duplicata:true, numero_duplicata:null } : { data_vencimento: l.vencimentoISO }),
           }));
           await addFatLancamentosEmLote(payload);
-          closeModal();
-          toast(`${linhasAtuais.length} título(s) importado(s)${novasContrapartes?` · ${novasContrapartes} novo(s) em ${tipo==="entrada"?"Clientes":"Fornecedores"}`:""}.`);
           onImported && onImported();
+          if(!falhas.length){
+            closeModal();
+            toast(`${aptas.length} título(s) importado(s).`);
+            return;
+          }
+          // houve falhas: mantém a janela aberta com o relatório do que NÃO foi importado
+          body.innerHTML = `
+            <div class="card" style="padding:12px 14px;background:${BRAND[50]};border-color:${BRAND[200]};margin-bottom:12px;">
+              <p style="margin:0;font-size:14px;color:${BRAND[800]};font-weight:600;">${aptas.length} título(s) importado(s) com sucesso.</p>
+            </div>
+            <div class="card" style="padding:12px 14px;background:#fdf2f0;border-color:#f0c9c2;margin-bottom:12px;">
+              <p style="margin:0;font-size:14px;color:${DANGER};font-weight:600;">⚠ ${falhas.length} título(s) NÃO foram importados</p>
+              <p style="margin:6px 0 0;font-size:13px;color:#57534e;line-height:1.5;">Falha: faltam os dados do ${rot.toLowerCase()} no cadastro (ou ele está sem Tipo de Conta). Cadastre ou complete o ${rot.toLowerCase()} em <b>Cadastros → ${tipo==="entrada"?"Clientes":"Fornecedores"}</b> e importe a planilha de novo — os títulos já importados serão duplicados se forem enviados outra vez, então apague essas linhas da planilha antes.</p>
+            </div>
+            <div style="max-height:40vh;overflow-y:auto;border:1px solid var(--border);border-radius:10px;">
+              <table style="width:100%;">
+                <thead style="position:sticky;top:0;background:#fff;"><tr>
+                  <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">${rot}</th>
+                  <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">CNPJ/CPF</th>
+                  <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">Vencimento</th>
+                  <th style="text-align:right;padding:8px;font-size:12px;color:#78716c;">Valor</th>
+                  <th style="text-align:left;padding:8px;font-size:12px;color:#78716c;">Motivo</th>
+                </tr></thead>
+                <tbody>${falhas.map(l=>`<tr>
+                  <td style="padding:6px 8px;font-weight:500;color:#44403c;">${esc(l.nome)}</td>
+                  <td style="padding:6px 8px;color:#78716c;">${esc(l.documento||"—")}</td>
+                  <td style="padding:6px 8px;color:#78716c;">${fmtDate(l.vencimentoISO)}</td>
+                  <td style="padding:6px 8px;text-align:right;">${currency(l.valor)}</td>
+                  <td style="padding:6px 8px;color:${DANGER};font-size:12px;">${esc(l.av.erro)}</td>
+                </tr>`).join("")}</tbody>
+              </table>
+            </div>
+            <div style="display:flex;justify-content:flex-end;margin-top:14px;"><button type="button" class="btn btn-primary" id="imp-fechar">Entendi</button></div>`;
+          body.querySelector("#imp-fechar").addEventListener("click", closeModal);
+          toast(`${aptas.length} importado(s) · ${falhas.length} bloqueado(s) por falta de cadastro.`, true);
         }catch(err){ toast(err.message, true); submitBtn.disabled=false; submitBtn.innerHTML = `${icon("check",15)} Importar`; }
       });
     }
